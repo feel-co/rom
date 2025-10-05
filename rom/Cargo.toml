@@ -1,0 +1,28 @@
+[package]
+name = "rom"
+description.workspace  = true
+version.workspace      = true
+edition.workspace      = true
+authors.workspace      = true
+rust-version.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+cognos = {path = "../cognos"}
+anyhow.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+crossterm = "0.29"
+ratatui = "0.29"
+indexmap.workspace = true
+csv.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+eyre.workspace = true
+
+[dev-dependencies]
+tempfile = "3.23.0"

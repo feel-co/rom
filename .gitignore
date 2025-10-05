@@ -1,0 +1,5 @@
+/target
+/result*
+
+# For reference
+nix-output-monitor

@@ -1,0 +1,15 @@
+[package]
+name = "cognos"
+description = "Minimalistic parser for Nix's ATerm .drv and internal-json log formats"
+version.workspace      = true
+edition.workspace      = true
+authors.workspace      = true
+rust-version.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+serde.workspace = true
+serde_repr.workspace = true
+serde_json.workspace = true
