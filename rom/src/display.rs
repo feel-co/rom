@@ -66,7 +66,6 @@ pub struct Display<W: Write> {
   writer:           W,
   config:           DisplayConfig,
   last_lines:       usize,
-  using_alt_screen: bool,
 }
 
 struct TreeNode {
@@ -80,7 +79,6 @@ impl<W: Write> Display<W> {
       writer,
       config,
       last_lines: 0,
-      using_alt_screen: false,
     })
   }
 
@@ -860,27 +858,7 @@ impl<W: Write> Display<W> {
     lines
   }
 
-  fn is_active_or_has_active_descendants(
-    &self,
-    state: &State,
-    drv_id: DerivationId,
-  ) -> bool {
-    if let Some(info) = state.get_derivation_info(drv_id) {
-      match info.build_status {
-        BuildStatus::Building(_) => return true,
-        BuildStatus::Failed { .. } => return true,
-        _ => {},
-      }
 
-      // Check children
-      for input in &info.input_derivations {
-        if self.is_active_or_has_active_descendants(state, input.derivation) {
-          return true;
-        }
-      }
-    }
-    false
-  }
 
   fn build_active_forest(
     &self,

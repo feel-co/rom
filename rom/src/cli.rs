@@ -6,6 +6,7 @@ use std::{
 };
 
 use clap::Parser;
+use cognos::ProgressState;
 
 #[derive(Debug, Parser)]
 #[command(name = "rom", version, about = "ROM - A Nix build output monitor")]
@@ -582,7 +583,7 @@ fn run_monitored_command(
 
       if !silent {
         if has_activity
-          || state.progress_state != crate::state::ProgressState::JustStarted
+          || state.progress_state != ProgressState::JustStarted
         {
           // Clear any previous timer display
           if last_timer_display.is_some() {

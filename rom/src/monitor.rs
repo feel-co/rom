@@ -12,6 +12,7 @@ use crate::{
   types::{Config, InputMode},
   update,
 };
+use cognos::Host;
 
 /// Main monitor that processes nix output and displays progress
 pub struct Monitor<W: Write> {
@@ -152,7 +153,7 @@ impl<W: Write> Monitor<W> {
 
           let build_info = crate::state::BuildInfo {
             start:       now,
-            host:        crate::state::Host::Localhost,
+            host:        Host::Localhost,
             estimate:    None,
             activity_id: None,
           };
@@ -175,7 +176,7 @@ impl<W: Write> Monitor<W> {
 
           let transfer = crate::state::TransferInfo {
             start:             now,
-            host:              crate::state::Host::Localhost,
+            host:              Host::Localhost,
             activity_id:       0, // No activity ID in human mode
             bytes_transferred: 0,
             total_bytes:       None,

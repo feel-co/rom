@@ -1,6 +1,6 @@
 //! State update logic for processing nix messages
 
-use cognos::{Actions, Activities, Id, Verbosity};
+use cognos::{Actions, Activities, Host, Id, ProgressState, Verbosity};
 use tracing::{debug, trace};
 
 use crate::state::{
@@ -14,10 +14,7 @@ use crate::state::{
   DerivationId,
   FailType,
   FailedBuildInfo,
-  Host,
   InputDerivation,
-  OutputName,
-  ProgressState,
   State,
   StorePath,
   StorePathId,
@@ -887,17 +884,5 @@ pub fn finish_state(state: &mut State) {
   }
 }
 
-/// Parse output name string to `OutputName` enum
-fn parse_output_name(s: &str) -> Option<OutputName> {
-  match s {
-    "out" => Some(OutputName::Out),
-    "doc" => Some(OutputName::Doc),
-    "dev" => Some(OutputName::Dev),
-    "bin" => Some(OutputName::Bin),
-    "info" => Some(OutputName::Info),
-    "lib" => Some(OutputName::Lib),
-    "man" => Some(OutputName::Man),
-    "dist" => Some(OutputName::Dist),
-    other => Some(OutputName::Other(other.to_string())),
-  }
-}
+
+

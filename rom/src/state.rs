@@ -6,7 +6,7 @@ use std::{
   time::{Duration, SystemTime},
 };
 
-use cognos::Id;
+use cognos::{Host, Id, OutputName, ProgressState};
 use indexmap::IndexMap;
 
 /// Unique identifier for store paths
@@ -18,35 +18,9 @@ pub type DerivationId = usize;
 /// Unique identifier for activities
 pub type ActivityId = Id;
 
-/// Overall progress state
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ProgressState {
-  JustStarted,
-  InputReceived,
-  Finished,
-}
 
-/// Build host information
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Host {
-  Localhost,
-  Remote(String),
-}
 
-impl Host {
-  #[must_use]
-  pub const fn is_local(&self) -> bool {
-    matches!(self, Self::Localhost)
-  }
 
-  #[must_use]
-  pub fn name(&self) -> &str {
-    match self {
-      Self::Localhost => "localhost",
-      Self::Remote(name) => name,
-    }
-  }
-}
 
 /// Store path representation
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -111,36 +85,8 @@ impl Derivation {
   }
 }
 
-/// Output name for derivations
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum OutputName {
-  Out,
-  Doc,
-  Dev,
-  Bin,
-  Info,
-  Lib,
-  Man,
-  Dist,
-  Other(String),
-}
 
-impl OutputName {
-  #[must_use]
-  pub fn parse(name: &str) -> Self {
-    match name.to_lowercase().as_str() {
-      "out" => Self::Out,
-      "doc" => Self::Doc,
-      "dev" => Self::Dev,
-      "bin" => Self::Bin,
-      "info" => Self::Info,
-      "lib" => Self::Lib,
-      "man" => Self::Man,
-      "dist" => Self::Dist,
-      _ => Self::Other(name.to_string()),
-    }
-  }
-}
+
 
 /// Transfer information (download/upload)
 #[derive(Debug, Clone)]
@@ -603,7 +549,7 @@ impl State {
         // Create output set
         let mut output_set = HashSet::new();
         for output in outputs {
-          output_set.insert(parse_output_name(&output));
+          output_set.insert(OutputName::parse(&output));
         }
 
         // Add to parent's input derivations
@@ -728,19 +674,7 @@ pub fn current_time() -> f64 {
     .as_secs_f64()
 }
 
-fn parse_output_name(name: &str) -> OutputName {
-  match name {
-    "out" => OutputName::Out,
-    "doc" => OutputName::Doc,
-    "dev" => OutputName::Dev,
-    "bin" => OutputName::Bin,
-    "info" => OutputName::Info,
-    "lib" => OutputName::Lib,
-    "man" => OutputName::Man,
-    "dist" => OutputName::Dist,
-    _ => OutputName::Other(name.to_string()),
-  }
-}
+
 
 #[cfg(test)]
 mod tests {
