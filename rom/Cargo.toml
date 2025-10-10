@@ -1,16 +1,16 @@
 [package]
 name = "rom"
-description.workspace  = true
-version.workspace      = true
-edition.workspace      = true
-authors.workspace      = true
+description.workspace = true
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
 rust-version.workspace = true
 
 [lib]
 path = "src/lib.rs"
 
 [dependencies]
-cognos = {path = "../cognos"}
+cognos = { path = "../cognos" }
 anyhow.workspace = true
 clap.workspace = true
 serde.workspace = true

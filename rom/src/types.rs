@@ -23,7 +23,7 @@ pub enum SummaryStyle {
 }
 
 impl SummaryStyle {
-  pub fn from_str(s: &str) -> Self {
+  #[must_use] pub fn from_str(s: &str) -> Self {
     match s.to_lowercase().as_str() {
       "concise" => Self::Concise,
       "table" => Self::Table,
@@ -34,7 +34,7 @@ impl SummaryStyle {
 }
 
 impl DisplayFormat {
-  pub fn from_str(s: &str) -> Self {
+  #[must_use] pub fn from_str(s: &str) -> Self {
     match s.to_lowercase().as_str() {
       "tree" => Self::Tree,
       "plain" => Self::Plain,

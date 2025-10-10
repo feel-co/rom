@@ -339,8 +339,8 @@ fn handle_build_start(
     // Create a placeholder derivation to track that builds are happening
     use std::path::PathBuf;
 
-    let placeholder_name = format!("building-{}", id);
-    let placeholder_path = format!("/nix/store/placeholder-{}.drv", id);
+    let placeholder_name = format!("building-{id}");
+    let placeholder_path = format!("/nix/store/placeholder-{id}.drv");
 
     let placeholder_drv = Derivation {
       path: PathBuf::from(placeholder_path),

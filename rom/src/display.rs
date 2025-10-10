@@ -14,9 +14,9 @@ use crossterm::{
 use crate::state::{BuildStatus, DerivationId, State, current_time};
 
 /// Format a duration in seconds to a human-readable string
-pub fn format_duration(secs: f64) -> String {
+#[must_use] pub fn format_duration(secs: f64) -> String {
   if secs < 60.0 {
-    format!("{:.0}s", secs)
+    format!("{secs:.0}s")
   } else if secs < 3600.0 {
     format!("{:.0}m{:.0}s", secs / 60.0, secs % 60.0)
   } else {
@@ -250,19 +250,19 @@ impl<W: Write> Display<W> {
         (usize, usize, usize),
       > = std::collections::HashMap::new();
 
-      for (_, build) in &state.full_summary.running_builds {
+      for build in state.full_summary.running_builds.values() {
         let host = build.host.name().to_string();
         let entry = host_builds.entry(host).or_insert((0, 0, 0));
         entry.0 += 1;
       }
 
-      for (_, build) in &state.full_summary.completed_builds {
+      for build in state.full_summary.completed_builds.values() {
         let host = build.host.name().to_string();
         let entry = host_builds.entry(host).or_insert((0, 0, 0));
         entry.1 += 1;
       }
 
-      for (_, build) in &state.full_summary.failed_builds {
+      for build in state.full_summary.failed_builds.values() {
         let host = build.host.name().to_string();
         let entry = host_builds.entry(host).or_insert((0, 0, 0));
         entry.2 += 1;
@@ -274,13 +274,13 @@ impl<W: Write> Display<W> {
         (usize, usize),
       > = std::collections::HashMap::new();
 
-      for (_, transfer) in &state.full_summary.running_downloads {
+      for transfer in state.full_summary.running_downloads.values() {
         let host = transfer.host.name().to_string();
         let entry = host_transfers.entry(host).or_insert((0, 0));
         entry.0 += 1;
       }
 
-      for (_, transfer) in &state.full_summary.running_uploads {
+      for transfer in state.full_summary.running_uploads.values() {
         let host = transfer.host.name().to_string();
         let entry = host_transfers.entry(host).or_insert((0, 0));
         entry.1 += 1;
@@ -381,9 +381,9 @@ impl<W: Write> Display<W> {
       || downloading > 0
       || uploading > 0
     {
-      lines.push(format!("{}", self.colored(&"═".repeat(60), Color::Blue)));
+      lines.push(self.colored(&"═".repeat(60), Color::Blue).to_string());
       lines.push(format!("{} Build Summary", self.colored("┃", Color::Blue)));
-      lines.push(format!("{}", self.colored(&"─".repeat(60), Color::Blue)));
+      lines.push(self.colored(&"─".repeat(60), Color::Blue).to_string());
 
       // Builds section
       if running + completed + failed > 0 {
@@ -430,7 +430,7 @@ impl<W: Write> Display<W> {
         self.format_duration(duration)
       ));
 
-      lines.push(format!("{}", self.colored(&"═".repeat(60), Color::Blue)));
+      lines.push(self.colored(&"═".repeat(60), Color::Blue).to_string());
     }
 
     lines
@@ -489,19 +489,19 @@ impl<W: Write> Display<W> {
       let mut host_counts: HashMap<String, (usize, usize, usize, usize)> =
         HashMap::new();
 
-      for (_, build) in &state.full_summary.running_builds {
+      for build in state.full_summary.running_builds.values() {
         let host = build.host.name().to_string();
         let entry = host_counts.entry(host).or_insert((0, 0, 0, 0));
         entry.0 += 1;
       }
 
-      for (_, build) in &state.full_summary.completed_builds {
+      for build in state.full_summary.completed_builds.values() {
         let host = build.host.name().to_string();
         let entry = host_counts.entry(host).or_insert((0, 0, 0, 0));
         entry.1 += 1;
       }
 
-      for (_, build) in &state.full_summary.failed_builds {
+      for build in state.full_summary.failed_builds.values() {
         let host = build.host.name().to_string();
         let entry = host_counts.entry(host).or_insert((0, 0, 0, 0));
         entry.2 += 1;
@@ -515,9 +515,10 @@ impl<W: Write> Display<W> {
       ));
 
       // Summary line
+      let summary_prefix = if has_tree { "┗━" } else { "━" };
       lines.push(format!(
         "{} ∑ {} {} │ {} {} │ {} {} │ {} {} │ {} {}",
-        self.colored("━", Color::Blue),
+        self.colored(summary_prefix, Color::Blue),
         self.colored("⏵", Color::Yellow),
         running,
         self.colored("✔", Color::Green),
@@ -547,9 +548,10 @@ impl<W: Write> Display<W> {
     let planned = state.full_summary.planned_builds.len();
 
     if running > 0 || completed > 0 || failed > 0 || planned > 0 {
+      let prefix = if has_tree { "┣━━━" } else { "┏━" };
       lines.push(format!(
         "{} Build Summary:",
-        self.colored("┣━━━", Color::Blue)
+        self.colored(prefix, Color::Blue)
       ));
       lines.push(format!(
         "┃    {} Running: {running}",
@@ -617,19 +619,19 @@ impl<W: Write> Display<W> {
 
     // Always show progress line, even if empty
     if running > 0 || planned > 0 || downloading > 0 || uploading > 0 {
-      let progress_line = if !progress_parts.is_empty() {
+      let progress_line = if progress_parts.is_empty() {
+        format!(
+          "{} {} {}",
+          self.colored("━", Color::Blue),
+          self.colored("⏱", Color::Grey),
+          self.format_duration(duration)
+        )
+      } else {
         format!(
           "{} {} {} {}",
           self.colored("━", Color::Blue),
           self.colored("⏱", Color::Grey),
           progress_parts.join(" "),
-          self.format_duration(duration)
-        )
-      } else {
-        format!(
-          "{} {} {}",
-          self.colored("━", Color::Blue),
-          self.colored("⏱", Color::Grey),
           self.format_duration(duration)
         )
       };
@@ -700,7 +702,7 @@ impl<W: Write> Display<W> {
 
     if let Some(build_info) = primary_build {
       let name = &build_info.name.name;
-      lines.push(format!("BUILD GRAPH: {}", name));
+      lines.push(format!("BUILD GRAPH: {name}"));
       lines.push("─".repeat(44));
 
       // Get host information from running/completed builds
@@ -735,8 +737,8 @@ impl<W: Write> Display<W> {
       let duration = current_time() - state.start_time;
 
       // Format dashboard
-      lines.push(format!("Host        │ {}", host));
-      lines.push(format!("Status      │ {}", status));
+      lines.push(format!("Host        │ {host}"));
+      lines.push(format!("Status      │ {status}"));
       lines.push(format!("Duration    │ {}", self.format_duration(duration)));
       lines.push("─".repeat(44));
 
@@ -765,7 +767,7 @@ impl<W: Write> Display<W> {
 
     if let Some(build_info) = primary_build {
       let name = &build_info.name.name;
-      lines.push(format!("BUILD GRAPH: {}", name));
+      lines.push(format!("BUILD GRAPH: {name}"));
       lines.push("─".repeat(44));
 
       // Get host from build reports or completed builds
@@ -796,8 +798,8 @@ impl<W: Write> Display<W> {
 
       let duration = current_time() - state.start_time;
 
-      lines.push(format!("Host        │ {}", host));
-      lines.push(format!("Status      │ {}", status));
+      lines.push(format!("Host        │ {host}"));
+      lines.push(format!("Status      │ {status}"));
       lines.push(format!("Duration    │ {}", self.format_duration(duration)));
       lines.push("─".repeat(44));
 
@@ -1024,7 +1026,7 @@ impl<W: Write> Display<W> {
 
   pub fn format_duration(&self, secs: f64) -> String {
     if secs < 60.0 {
-      format!("{:.0}s", secs)
+      format!("{secs:.0}s")
     } else if secs < 3600.0 {
       format!("{:.0}m{:.0}s", secs / 60.0, secs % 60.0)
     } else {
@@ -1043,7 +1045,7 @@ impl<W: Write> Display<W> {
   fn format_bytes(&self, bytes: u64, total: u64) -> String {
     let format_size = |b: u64| -> String {
       if b < 1024 {
-        format!("{} B", b)
+        format!("{b} B")
       } else if b < 1024 * 1024 {
         format!("{:.1} KB", b as f64 / 1024.0)
       } else if b < 1024 * 1024 * 1024 {

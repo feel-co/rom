@@ -112,7 +112,7 @@ impl<W: Write> Monitor<W> {
         Ok(action) => {
           // Handle message passthrough - print directly to stdout
           if let cognos::Actions::Message { msg, .. } = &action {
-            println!("{}", msg);
+            println!("{msg}");
           }
 
           let changed = update::process_message(&mut self.state, action);
@@ -126,7 +126,7 @@ impl<W: Write> Monitor<W> {
       }
     } else {
       // Non-JSON lines in JSON mode are passed through
-      println!("{}", line);
+      println!("{line}");
       Ok(false)
     }
   }

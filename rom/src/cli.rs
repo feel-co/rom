@@ -254,7 +254,7 @@ pub fn run() -> eyre::Result<()> {
 ///
 /// Everything before `--` is for the package name and rom arguments.
 /// Everything after `--` goes directly to nix.
-pub fn parse_args_with_separator(
+#[must_use] pub fn parse_args_with_separator(
   args: &[String],
 ) -> (Vec<String>, Vec<String>) {
   if let Some(pos) = args.iter().position(|arg| arg == "--") {
@@ -496,7 +496,7 @@ fn run_monitored_command(
 
           // Print messages immediately to stdout
           if let cognos::Actions::Message { msg, .. } = &action {
-            println!("{}", msg);
+            println!("{msg}");
           }
 
           let mut state = state_clone.lock().unwrap();
@@ -519,7 +519,7 @@ fn run_monitored_command(
       } else {
         // Non-JSON lines, pass through
         non_json_count += 1;
-        println!("{}", line);
+        println!("{line}");
       }
     }
     debug!(
@@ -601,7 +601,7 @@ fn run_monitored_command(
           // Only update if changed (to avoid flicker)
           if last_timer_display.as_ref() != Some(&timer_text) {
             display.clear_previous().ok();
-            eprintln!("{}", timer_text);
+            eprintln!("{timer_text}");
             last_timer_display = Some(timer_text);
           }
         }
