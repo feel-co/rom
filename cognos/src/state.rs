@@ -97,18 +97,22 @@ pub struct Dependencies {
 
 // #[derive(Default)]
 pub struct State {
-  pub progress: ProgressState,
-  pub derivations: HashMap<Id, Derivation>,
-  pub builds: HashMap<Id, BuildInfo>,
-  pub dependencies: Dependencies,
-  pub store_paths: HashMap<Id, StorePath>,
+  pub progress:          ProgressState,
+  pub derivations:       HashMap<Id, Derivation>,
+  pub builds:            HashMap<Id, BuildInfo>,
+  pub dependencies:      Dependencies,
+  pub store_paths:       HashMap<Id, StorePath>,
   pub dependency_states: HashMap<Id, DependencyState>,
 }
 
 impl State {
   pub fn imbibe(&mut self, action: Actions) {
     match action {
-      Actions::Start { id, activity: _activity, .. } => {
+      Actions::Start {
+        id,
+        activity: _activity,
+        ..
+      } => {
         let derivation = Derivation {
           store_path: PathBuf::from("/nix/store/placeholder"),
         };
@@ -118,11 +122,11 @@ impl State {
         let _path = &self.derivations.get(&id).unwrap().store_path;
 
         let build_info = BuildInfo {
-          start: 0.0, // Placeholder, would need actual time
-          host: Host::Localhost, // Placeholder
-          estimate: None,
+          start:       0.0, // Placeholder, would need actual time
+          host:        Host::Localhost, // Placeholder
+          estimate:    None,
           activity_id: id,
-          state: BuildStatus::Running,
+          state:       BuildStatus::Running,
         };
         self.builds.insert(id, build_info.clone());
         self.dependencies.deps.insert(id, build_info);
