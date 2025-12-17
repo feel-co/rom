@@ -4,6 +4,7 @@ use cognos::{Actions, Activities, Host, Id, ProgressState, Verbosity};
 use tracing::{debug, trace};
 
 use crate::state::{
+  ActivityProgress,
   ActivityStatus,
   BuildFail,
   BuildInfo,
@@ -86,6 +87,7 @@ fn handle_start(
     text:     text.clone(),
     parent:   parent_id,
     phase:    None,
+    progress: None,
   });
 
   let changed = match activity_u8 {
@@ -228,6 +230,14 @@ fn handle_message(state: &mut State, level: Verbosity, msg: String) -> bool {
       }
       true // return true since we stored the log
     },
+    Verbosity::Talkative
+    | Verbosity::Chatty
+    | Verbosity::Debug
+    | Verbosity::Vomit => {
+      // These are trace-level messages, store separately
+      state.traces.push(msg.clone());
+      true
+    },
     _ => {
       true // return true since we stored the log
     },
@@ -245,14 +255,14 @@ fn handle_result(
     101 | 108 => {
       // FileTransfer or Substitute
       // Fields contain progress information
-      // XXX: Format: [bytes_transferred, total_bytes]
+      // Format: [bytes_transferred, total_bytes]
       if fields.len() >= 2 {
         update_transfer_progress(state, id, &fields);
       }
       false
     },
     104 => {
-      // Builds activity type - contains phase information
+      // Builds activity type - contains phase information or progress
       if !fields.is_empty() {
         if let Some(phase_str) = fields[0].as_str() {
           // Update the activity's phase field
@@ -265,8 +275,36 @@ fn handle_result(
       false
     },
     105 => {
-      // Build completed, fields contain output path
-      complete_build(state, id)
+      // Progress update (done, expected, running, failed)
+      // OR Build completed (fields contain output path as string)
+      if fields.len() >= 4 {
+        // This is a progress update: [done, expected, running, failed]
+        if let (Some(done), Some(expected), Some(running), Some(failed)) = (
+          fields[0].as_u64(),
+          fields[1].as_u64(),
+          fields[2].as_u64(),
+          fields[3].as_u64(),
+        ) {
+          if let Some(activity) = state.activities.get_mut(&id) {
+            activity.progress = Some(ActivityProgress {
+              done,
+              expected,
+              running,
+              failed,
+            });
+            return true;
+          }
+          return false;
+        }
+      }
+
+      if !fields.is_empty() && fields[0].is_string() {
+        // This is a build completion with output path
+        complete_build(state, id)
+      } else {
+        // Legacy: just mark build as complete
+        complete_build(state, id)
+      }
     },
     _ => false,
   }
@@ -883,6 +921,3 @@ pub fn finish_state(state: &mut State) {
     }
   }
 }
-
-
-
