@@ -18,10 +18,6 @@ pub type DerivationId = usize;
 /// Unique identifier for activities
 pub type ActivityId = Id;
 
-
-
-
-
 /// Store path representation
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct StorePath {
@@ -84,9 +80,6 @@ impl Derivation {
     })
   }
 }
-
-
-
 
 /// Transfer information (download/upload)
 #[derive(Debug, Clone)]
@@ -324,6 +317,20 @@ pub struct ActivityStatus {
   pub text:     String,
   pub parent:   Option<ActivityId>,
   pub phase:    Option<String>,
+  pub progress: Option<ActivityProgress>,
+}
+
+/// Activity progress for downloads/uploads/builds
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ActivityProgress {
+  /// Bytes completed
+  pub done:     u64,
+  /// Total bytes expected
+  pub expected: u64,
+  /// Currently running transfers
+  pub running:  u64,
+  /// Failed transfers
+  pub failed:   u64,
 }
 
 /// Build report for caching
@@ -361,6 +368,7 @@ pub struct State {
   pub activities:       HashMap<ActivityId, ActivityStatus>,
   pub nix_errors:       Vec<String>,
   pub build_logs:       Vec<String>,
+  pub traces:           Vec<String>,
   pub build_platform:   Option<String>,
   pub evaluation_state: EvalInfo,
   next_store_path_id:   StorePathId,
@@ -390,6 +398,7 @@ impl State {
       activities:         HashMap::new(),
       nix_errors:         Vec::new(),
       build_logs:         Vec::new(),
+      traces:             Vec::new(),
       build_platform:     None,
       evaluation_state:   EvalInfo::default(),
       next_store_path_id: 0,
@@ -664,6 +673,30 @@ impl State {
       .map(|(id, info)| (*id, info))
       .collect()
   }
+
+  /// Check if a derivation has a platform mismatch
+  #[must_use]
+  pub fn has_platform_mismatch(&self, id: DerivationId) -> bool {
+    if let (Some(build_platform), Some(info)) =
+      (&self.build_platform, self.get_derivation_info(id))
+    {
+      if let Some(drv_platform) = &info.platform {
+        return build_platform != drv_platform;
+      }
+    }
+    false
+  }
+
+  /// Get all derivations with platform mismatches
+  #[must_use]
+  pub fn platform_mismatches(&self) -> Vec<DerivationId> {
+    self
+      .derivation_infos
+      .keys()
+      .filter(|&&id| self.has_platform_mismatch(id))
+      .copied()
+      .collect()
+  }
 }
 
 #[must_use]
@@ -673,8 +706,6 @@ pub fn current_time() -> f64 {
     .unwrap_or(Duration::ZERO)
     .as_secs_f64()
 }
-
-
 
 #[cfg(test)]
 mod tests {
