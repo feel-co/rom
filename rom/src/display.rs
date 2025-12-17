@@ -14,7 +14,8 @@ use crossterm::{
 use crate::state::{BuildStatus, DerivationId, State, current_time};
 
 /// Format a duration in seconds to a human-readable string
-#[must_use] pub fn format_duration(secs: f64) -> String {
+#[must_use]
+pub fn format_duration(secs: f64) -> String {
   if secs < 60.0 {
     format!("{secs:.0}s")
   } else if secs < 3600.0 {
@@ -63,9 +64,9 @@ impl Default for DisplayConfig {
 }
 
 pub struct Display<W: Write> {
-  writer:           W,
-  config:           DisplayConfig,
-  last_lines:       usize,
+  writer:     W,
+  config:     DisplayConfig,
+  last_lines: usize,
 }
 
 struct TreeNode {
@@ -859,8 +860,6 @@ impl<W: Write> Display<W> {
 
     lines
   }
-
-
 
   fn build_active_forest(
     &self,

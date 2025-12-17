@@ -254,7 +254,8 @@ pub fn run() -> eyre::Result<()> {
 ///
 /// Everything before `--` is for the package name and rom arguments.
 /// Everything after `--` goes directly to nix.
-#[must_use] pub fn parse_args_with_separator(
+#[must_use]
+pub fn parse_args_with_separator(
   args: &[String],
 ) -> (Vec<String>, Vec<String>) {
   if let Some(pos) = args.iter().position(|arg| arg == "--") {
@@ -582,9 +583,7 @@ fn run_monitored_command(
         || !state.full_summary.planned_builds.is_empty();
 
       if !silent {
-        if has_activity
-          || state.progress_state != ProgressState::JustStarted
-        {
+        if has_activity || state.progress_state != ProgressState::JustStarted {
           // Clear any previous timer display
           if last_timer_display.is_some() {
             display.clear_previous().ok();
