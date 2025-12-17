@@ -1,18 +1,25 @@
 //! Monitor module for orchestrating state updates and display rendering
-
 use std::{
   io::{BufRead, Write},
   time::Duration,
 };
 
+use cognos::Host;
+
 use crate::{
-  display::{Display, DisplayConfig},
+  display::{Display, DisplayConfig, LegendStyle, SummaryStyle},
   error::{Result, RomError},
-  state::State,
+  state::{
+    BuildStatus,
+    Derivation,
+    FailType,
+    State,
+    StorePath,
+    StorePathState,
+  },
   types::{Config, InputMode},
   update,
 };
-use cognos::Host;
 
 /// Main monitor that processes nix output and displays progress
 pub struct Monitor<W: Write> {
@@ -25,15 +32,15 @@ impl<W: Write> Monitor<W> {
   /// Create a new monitor
   pub fn new(config: Config, writer: W) -> Result<Self> {
     let legend_style = match config.legend_style.to_lowercase().as_str() {
-      "compact" => crate::display::LegendStyle::Compact,
-      "verbose" => crate::display::LegendStyle::Verbose,
-      _ => crate::display::LegendStyle::Table,
+      "compact" => LegendStyle::Compact,
+      "verbose" => LegendStyle::Verbose,
+      _ => LegendStyle::Table,
     };
 
     let summary_style = match config.summary_style.to_lowercase().as_str() {
-      "table" => crate::display::SummaryStyle::Table,
-      "full" => crate::display::SummaryStyle::Full,
-      _ => crate::display::SummaryStyle::Concise,
+      "table" => SummaryStyle::Table,
+      "full" => SummaryStyle::Full,
+      _ => SummaryStyle::Concise,
     };
 
     let display_config = DisplayConfig {
@@ -174,20 +181,21 @@ impl<W: Write> Monitor<W> {
           let path_id = self.state.get_or_create_store_path_id(path);
           let now = crate::state::current_time();
 
+          // Try to extract byte size from the message
+          let total_bytes = extract_byte_size(line);
+
           let transfer = crate::state::TransferInfo {
-            start:             now,
-            host:              Host::Localhost,
-            activity_id:       0, // No activity ID in human mode
+            start: now,
+            host: Host::Localhost,
+            activity_id: 0, // no activity ID in human mode
             bytes_transferred: 0,
-            total_bytes:       None,
+            total_bytes,
           };
 
           if let Some(path_info) = self.state.get_store_path_info_mut(path_id) {
             path_info
               .states
-              .insert(crate::state::StorePathState::Downloading(
-                transfer.clone(),
-              ));
+              .insert(StorePathState::Downloading(transfer.clone()));
           }
 
           self
@@ -201,14 +209,116 @@ impl<W: Write> Monitor<W> {
       }
     }
 
+    // Detect download completions with byte sizes
+    if line.starts_with("downloaded") || line.contains("downloaded '") {
+      if let Some(path_str) = extract_path_from_message(line) {
+        if let Some(path) = StorePath::parse(&path_str) {
+          if let Some(&path_id) = self.state.store_path_ids.get(&path) {
+            let now = crate::state::current_time();
+            let total_bytes = extract_byte_size(line).unwrap_or(0);
+
+            // Get start time from running download if it exists
+            let start = self
+              .state
+              .full_summary
+              .running_downloads
+              .get(&path_id)
+              .map(|t| t.start)
+              .unwrap_or(now);
+
+            let completed = crate::state::CompletedTransferInfo {
+              start,
+              end: now,
+              host: Host::Localhost,
+              total_bytes,
+            };
+
+            if let Some(path_info) = self.state.get_store_path_info_mut(path_id)
+            {
+              path_info
+                .states
+                .insert(StorePathState::Downloaded(completed.clone()));
+            }
+
+            self.state.full_summary.running_downloads.remove(&path_id);
+            self
+              .state
+              .full_summary
+              .completed_downloads
+              .insert(path_id, completed);
+
+            return Ok(true);
+          }
+        }
+      }
+    }
+
+    // Detect "checking outputs of" messages
+    if line.contains("checking outputs of") {
+      if let Some(drv_path) = extract_path_from_message(line) {
+        if let Some(drv) = crate::state::Derivation::parse(&drv_path) {
+          let drv_id = self.state.get_or_create_derivation_id(drv);
+          // Just mark it as "touched" - checking happens after build
+          // Reminds me of Sako...
+          self.state.touched_ids.insert(drv_id);
+          return Ok(true);
+        }
+      }
+    }
+
+    // Detect "copying N paths" messages
+    if line.starts_with("copying") && line.contains("paths") {
+      // Extract number of paths if present
+      let words: Vec<&str> = line.split_whitespace().collect();
+      if words.len() >= 2 {
+        if let Ok(_count) = words[1].parse::<usize>() {
+          // XXX: This is a PlanCopies message, we'll probably track this
+          // For now just acknowledge it, and let future work decide how
+          // we should go around doing it.
+          return Ok(true);
+        }
+      }
+    }
+
     // Detect errors
     if line.starts_with("error:") || line.contains("error:") {
       self.state.nix_errors.push(line.to_string());
-      return Ok(true);
-    }
 
-    // Detect build completions
-    if line.starts_with("built") || line.contains("built '") {
+      // Try to determine the error type and associated derivation
+      let fail_type = if line.contains("hash mismatch")
+        || line.contains("output path")
+          && (line.contains("hash") || line.contains("differs"))
+      {
+        FailType::HashMismatch
+      } else if line.contains("timed out") || line.contains("timeout") {
+        FailType::Timeout
+      } else if line.contains("dependency failed")
+        || line.contains("dependencies failed")
+      {
+        FailType::DependencyFailed
+      } else if line.contains("builder for")
+        && line.contains("failed with exit code")
+      {
+        // Try to extract exit code
+        if let Some(code_pos) = line.find("exit code") {
+          let after_code = &line[code_pos + 10..];
+          let code_str = after_code
+            .split_whitespace()
+            .next()
+            .map(|s| s.trim_end_matches(|c: char| !c.is_ascii_digit()));
+          if let Some(code) = code_str.and_then(|s| s.parse::<i32>().ok()) {
+            FailType::BuildFailed(code)
+          } else {
+            FailType::Unknown
+          }
+        } else {
+          FailType::Unknown
+        }
+      } else {
+        FailType::Unknown
+      };
+
+      // Try to find the associated derivation and mark it as failed
       if let Some(drv_path) = extract_path_from_message(line) {
         if let Some(drv) = crate::state::Derivation::parse(&drv_path) {
           if let Some(&drv_id) = self.state.derivation_ids.get(&drv) {
@@ -219,11 +329,35 @@ impl<W: Write> Monitor<W> {
                 let now = crate::state::current_time();
                 self.state.update_build_status(
                   drv_id,
-                  crate::state::BuildStatus::Built {
+                  crate::state::BuildStatus::Failed {
                     info: build_info.clone(),
-                    end:  now,
+                    fail: crate::state::BuildFail {
+                      at:        now,
+                      fail_type: fail_type.clone(),
+                    },
                   },
                 );
+              }
+            }
+          }
+        }
+      }
+
+      return Ok(true);
+    }
+
+    // Detect build completions
+    if line.starts_with("built") || line.contains("built '") {
+      if let Some(drv_path) = extract_path_from_message(line) {
+        if let Some(drv) = Derivation::parse(&drv_path) {
+          if let Some(&drv_id) = self.state.derivation_ids.get(&drv) {
+            if let Some(info) = self.state.get_derivation_info(drv_id) {
+              if let BuildStatus::Building(build_info) = &info.build_status {
+                let now = crate::state::current_time();
+                self.state.update_build_status(drv_id, BuildStatus::Built {
+                  info: build_info.clone(),
+                  end:  now,
+                });
                 return Ok(true);
               }
             }
@@ -271,6 +405,57 @@ fn extract_path_from_message(line: &str) -> Option<String> {
   None
 }
 
+/// Parse byte size from human-readable format (e.g., "123 KiB", "4.5 MiB")
+/// Supports: B, KiB, MiB, GiB, TiB, PiB
+fn parse_byte_size(text: &str) -> Option<u64> {
+  let parts: Vec<&str> = text.split_whitespace().collect();
+  if parts.len() < 2 {
+    return None;
+  }
+
+  let value: f64 = parts[0].parse().ok()?;
+  let unit = parts[1];
+
+  let multiplier = match unit {
+    "B" => 1_u64,
+    "KiB" => 1024,
+    "MiB" => 1024 * 1024,
+    "GiB" => 1024 * 1024 * 1024,
+    "TiB" => 1024_u64 * 1024 * 1024 * 1024,
+    "PiB" => 1024_u64 * 1024 * 1024 * 1024 * 1024,
+    _ => return None,
+  };
+
+  Some((value * multiplier as f64) as u64)
+}
+
+/// Extract byte size from a message line (e.g., "downloaded 123 KiB")
+fn extract_byte_size(line: &str) -> Option<u64> {
+  // Look for patterns like "123 KiB", "6.7 MiB", etc.
+  // Haha 6.7
+  let words: Vec<&str> = line.split_whitespace().collect();
+  for (i, word) in words.iter().enumerate() {
+    if i + 1 < words.len() {
+      let unit = words[i + 1];
+      if matches!(unit, "B" | "KiB" | "MiB" | "GiB" | "TiB" | "PiB") {
+        if let Ok(value) = word.parse::<f64>() {
+          let multiplier = match unit {
+            "B" => 1_u64,
+            "KiB" => 1024,
+            "MiB" => 1024 * 1024,
+            "GiB" => 1024 * 1024 * 1024,
+            "TiB" => 1024_u64 * 1024 * 1024 * 1024,
+            "PiB" => 1024_u64 * 1024 * 1024 * 1024 * 1024,
+            _ => 1,
+          };
+          return Some((value * multiplier as f64) as u64);
+        }
+      }
+    }
+  }
+  None
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -296,5 +481,33 @@ mod tests {
     let line = "building /nix/store/abc123-hello-1.0.drv locally";
     let path = extract_path_from_message(line);
     assert!(path.is_some());
+  }
+
+  #[test]
+  fn test_parse_byte_size() {
+    assert_eq!(parse_byte_size("123 B"), Some(123));
+    assert_eq!(parse_byte_size("1 KiB"), Some(1024));
+    assert_eq!(parse_byte_size("1 MiB"), Some(1024 * 1024));
+    assert_eq!(parse_byte_size("1 GiB"), Some(1024 * 1024 * 1024));
+    assert_eq!(
+      parse_byte_size("2.5 MiB"),
+      Some((2.5 * 1024.0 * 1024.0) as u64)
+    );
+    assert_eq!(parse_byte_size("invalid"), None);
+  }
+
+  #[test]
+  fn test_extract_byte_size() {
+    let line = "downloaded 123 KiB in 2 seconds";
+    assert_eq!(extract_byte_size(line), Some(123 * 1024));
+
+    let line2 = "downloading 4.5 MiB";
+    assert_eq!(
+      extract_byte_size(line2),
+      Some((4.5 * 1024.0 * 1024.0) as u64)
+    );
+
+    let line3 = "no size here";
+    assert_eq!(extract_byte_size(line3), None);
   }
 }
