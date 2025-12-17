@@ -91,18 +91,25 @@ fn handle_start(
   });
 
   let changed = match activity_u8 {
-    104 | 105 => handle_build_start(state, id, parent_id, &text, &fields, now), /* Builds | Build */
+    105 => handle_build_start(state, id, parent_id, &text, &fields, now), /* Build */
     108 => handle_substitute_start(state, id, &text, &fields, now), /* Substitute */
-    101 => handle_transfer_start(state, id, &text, &fields, now, false), /* FileTransfer */
-    100 | 103 => handle_transfer_start(state, id, &text, &fields, now, true), /* CopyPath | CopyPaths */
-    _ => false,
+    109 => handle_query_path_info_start(state, id, &text, &fields, now), /* QueryPathInfo */
+    110 => handle_post_build_hook_start(state, id, &text, &fields, now), /* PostBuildHook */
+    101 => handle_file_transfer_start(state, id, &text, &fields, now), /* FileTransfer */
+    100 => handle_copy_path_start(state, id, &text, &fields, now), // CopyPath
+    102 | 103 | 104 | 106 | 107 | 111 | 112 => {
+      // Realise, CopyPaths, Builds, OptimiseStore, VerifyPaths, BuildWaiting,
+      // FetchTree These activities have no fields and are just tracked
+      true
+    },
+    _ => {
+      debug!("Unknown activity type: {}", activity_u8);
+      false
+    },
   };
 
   // Track parent-child relationships for dependency tree
-  if changed
-    && (activity_u8 == 104 || activity_u8 == 105)
-    && parent_id.is_some()
-  {
+  if changed && activity_u8 == 105 && parent_id.is_some() {
     let parent_act_id = parent_id.unwrap();
 
     // Find parent and child derivation IDs
@@ -112,8 +119,8 @@ fn handle_start(
     if let Some(parent_drv_id) = parent_drv_id {
       if let Some(child_drv_id) = child_drv_id {
         debug!(
-          "Establishing parent-child relationship: parent={}, child={}",
-          parent_drv_id, child_drv_id
+          "Establishing parent-child relationship: parent={parent_drv_id}, \
+           child={child_drv_id}"
         );
 
         // Add child as a dependency of parent
@@ -152,9 +159,19 @@ fn handle_stop(state: &mut State, id: Id, now: f64) -> bool {
     state.activities.remove(&id);
 
     match activity_status.activity {
-      104 | 105 => handle_build_stop(state, id, now), // Builds | Build
-      108 => handle_substitute_stop(state, id, now),  // Substitute
-      101 | 100 | 103 => handle_transfer_stop(state, id, now), /* FileTransfer, CopyPath, CopyPaths */
+      105 => handle_build_stop(state, id, now), // Build
+      108 => handle_substitute_stop(state, id, now), // Substitute
+      101 | 100 => handle_transfer_stop(state, id, now), // FileTransfer,
+      // CopyPath
+      109 | 110 => {
+        // QueryPathInfo, PostBuildHook - just acknowledge stop
+        false
+      },
+      102 | 103 | 104 | 106 | 107 | 111 | 112 => {
+        // Realise, CopyPaths, Builds, OptimiseStore, VerifyPaths, BuildWaiting,
+        // FetchTree
+        false
+      },
       _ => false,
     }
   } else {
@@ -168,7 +185,7 @@ fn handle_message(state: &mut State, level: Verbosity, msg: String) -> bool {
 
   // Extract phase from log messages like "Running phase: configurePhase"
   if let Some(phase_start) = msg.find("Running phase: ") {
-    let phase_name = &msg[phase_start + 15..]; // Skip "Running phase: "
+    let phase_name = &msg[phase_start + 15..]; // skip "Running phase: "
     let phase = phase_name.trim().to_string();
 
     // Find the active build and update its phase
@@ -247,38 +264,70 @@ fn handle_message(state: &mut State, level: Verbosity, msg: String) -> bool {
 fn handle_result(
   state: &mut State,
   id: Id,
-  activity: u8,
+  result_type: u8,
   fields: Vec<serde_json::Value>,
   _now: f64,
 ) -> bool {
-  match activity {
-    101 | 108 => {
-      // FileTransfer or Substitute
-      // Fields contain progress information
-      // Format: [bytes_transferred, total_bytes]
+  // Result message types are DIFFERENT from Activity types
+  // Type 100: FileLinked (2 ints)
+  // Type 101: BuildLogLine (1 text)
+  // Type 102: UntrustedPath (1 text - store path)
+  // Type 103: CorruptedPath (1 text - store path)
+  // Type 104: SetPhase (1 text)
+  // Type 105: Progress (4 ints: done, expected, running, failed)
+  // Type 106: SetExpected (2 ints: activity type, count)
+  // Type 107: PostBuildLogLine (1 text)
+  // Type 108: FetchStatus (1 text)
+
+  match result_type {
+    100 => {
+      // FileLinked: 2 int fields
       if fields.len() >= 2 {
-        update_transfer_progress(state, id, &fields);
+        let _linked = fields[0].as_u64();
+        let _total = fields[1].as_u64();
+        // TODO: Track file linking progress
+      }
+      false
+    },
+    101 => {
+      // BuildLogLine: 1 text field
+      if let Some(line) = fields.first().and_then(|f| f.as_str()) {
+        state.build_logs.push(line.to_string());
+        return true;
+      }
+      false
+    },
+    102 => {
+      // UntrustedPath: 1 text field (store path)
+      if let Some(path_str) = fields.first().and_then(|f| f.as_str()) {
+        debug!("Untrusted path: {}", path_str);
+        // TODO: Track untrusted paths
+      }
+      false
+    },
+    103 => {
+      // CorruptedPath: 1 text field (store path)
+      if let Some(path_str) = fields.first().and_then(|f| f.as_str()) {
+        state
+          .nix_errors
+          .push(format!("Corrupted path: {path_str}"));
+        return true;
       }
       false
     },
     104 => {
-      // Builds activity type - contains phase information or progress
-      if !fields.is_empty() {
-        if let Some(phase_str) = fields[0].as_str() {
-          // Update the activity's phase field
-          if let Some(activity) = state.activities.get_mut(&id) {
-            activity.phase = Some(phase_str.to_string());
-            return true;
-          }
+      // SetPhase: 1 text field
+      if let Some(phase_str) = fields.first().and_then(|f| f.as_str()) {
+        if let Some(activity) = state.activities.get_mut(&id) {
+          activity.phase = Some(phase_str.to_string());
+          return true;
         }
       }
       false
     },
     105 => {
-      // Progress update (done, expected, running, failed)
-      // OR Build completed (fields contain output path as string)
+      // Progress: 4 int fields (done, expected, running, failed)
       if fields.len() >= 4 {
-        // This is a progress update: [done, expected, running, failed]
         if let (Some(done), Some(expected), Some(running), Some(failed)) = (
           fields[0].as_u64(),
           fields[1].as_u64(),
@@ -294,19 +343,39 @@ fn handle_result(
             });
             return true;
           }
-          return false;
         }
       }
-
-      if !fields.is_empty() && fields[0].is_string() {
-        // This is a build completion with output path
-        complete_build(state, id)
-      } else {
-        // Legacy: just mark build as complete
-        complete_build(state, id)
-      }
+      false
     },
-    _ => false,
+    106 => {
+      // SetExpected: 2 int fields (activity type, count)
+      if fields.len() >= 2 {
+        let _activity_type = fields[0].as_u64();
+        let _expected_count = fields[1].as_u64();
+        // TODO: Track expected counts
+      }
+      false
+    },
+    107 => {
+      // PostBuildLogLine: 1 text field
+      if let Some(line) = fields.first().and_then(|f| f.as_str()) {
+        state.build_logs.push(format!("[post-build] {line}"));
+        return true;
+      }
+      false
+    },
+    108 => {
+      // FetchStatus: 1 text field
+      if let Some(status) = fields.first().and_then(|f| f.as_str()) {
+        debug!("Fetch status: {}", status);
+        // TODO: Track fetch status
+      }
+      false
+    },
+    _ => {
+      debug!("Unknown result type: {}", result_type);
+      false
+    },
   }
 }
 
@@ -358,55 +427,19 @@ fn handle_build_start(
       );
 
       // Mark as forest root if no parent
-      // Only add to forest roots if no parent
       if parent_id.is_none() && !state.forest_roots.contains(&drv_id) {
         state.forest_roots.push(drv_id);
       }
 
-      // Store activity -> derivation mapping
-      // Phase will be extracted from log messages
       return true;
     }
     debug!("Failed to parse derivation from path: {}", drv_path);
   } else {
     debug!(
-      "No derivation path found - creating placeholder for activity {}",
+      "No derivation path in fields for Build activity {} - this should not \
+       happen",
       id
     );
-    // For shell/develop commands, nix doesn't report specific derivation paths
-    // Create a placeholder derivation to track that builds are happening
-    use std::path::PathBuf;
-
-    let placeholder_name = format!("building-{id}");
-    let placeholder_path = format!("/nix/store/placeholder-{id}.drv");
-
-    let placeholder_drv = Derivation {
-      path: PathBuf::from(placeholder_path),
-      name: placeholder_name,
-    };
-
-    let drv_id = state.get_or_create_derivation_id(placeholder_drv);
-    let host = extract_host(text);
-
-    let build_info = BuildInfo {
-      start: now,
-      host,
-      estimate: None,
-      activity_id: Some(id),
-    };
-
-    debug!(
-      "Setting placeholder derivation {} to Building status",
-      drv_id
-    );
-    state.update_build_status(drv_id, BuildStatus::Building(build_info));
-
-    // Mark as forest root if no parent
-    if parent_id.is_none() && !state.forest_roots.contains(&drv_id) {
-      state.forest_roots.push(drv_id);
-    }
-
-    return true;
   }
   false
 }
@@ -512,45 +545,111 @@ fn handle_substitute_stop(state: &mut State, id: Id, now: f64) -> bool {
   false
 }
 
-fn handle_transfer_start(
+fn handle_file_transfer_start(
+  _state: &mut State,
+  id: Id,
+  _text: &str,
+  fields: &[serde_json::Value],
+  _now: f64,
+) -> bool {
+  // FileTransfer expects 1 text field: URL or description
+  if fields.is_empty() {
+    debug!("FileTransfer activity {} has no fields", id);
+    return false;
+  }
+
+  // Just track the activity, actual progress comes via Result messages
+  true
+}
+
+fn handle_copy_path_start(
   state: &mut State,
   id: Id,
-  text: &str,
+  _text: &str,
   fields: &[serde_json::Value],
   now: f64,
-  is_copy: bool,
 ) -> bool {
-  let path_str = if fields.is_empty() {
-    extract_store_path(text)
-  } else {
-    fields[0].as_str().map(std::string::ToString::to_string)
-  };
+  // CopyPath expects 3 text fields: path, from, to
+  if fields.len() < 3 {
+    debug!("CopyPath activity {} has insufficient fields", id);
+    return false;
+  }
 
-  if let Some(path_str) = path_str {
-    if let Some(path) = StorePath::parse(&path_str) {
+  let path_str = fields[0].as_str();
+  let _from_host = fields[1].as_str().map(|s| {
+    if s.is_empty() || s == "localhost" {
+      Host::Localhost
+    } else {
+      Host::Remote(s.to_string())
+    }
+  });
+  let to_host = fields[2].as_str().map(|s| {
+    if s.is_empty() || s == "localhost" {
+      Host::Localhost
+    } else {
+      Host::Remote(s.to_string())
+    }
+  });
+
+  if let (Some(path_str), Some(to)) = (path_str, to_host) {
+    if let Some(path) = StorePath::parse(path_str) {
       let path_id = state.get_or_create_store_path_id(path);
-      let host = extract_host(text);
 
       let transfer = TransferInfo {
-        start: now,
-        host,
-        activity_id: id,
+        start:             now,
+        host:              to, // destination host
+        activity_id:       id,
         bytes_transferred: 0,
-        total_bytes: None,
+        total_bytes:       None,
       };
 
-      if is_copy {
-        state.full_summary.running_uploads.insert(path_id, transfer);
-      } else {
-        state
-          .full_summary
-          .running_downloads
-          .insert(path_id, transfer);
-      }
-
+      // CopyPath is an upload from 'from' to 'to'
+      state.full_summary.running_uploads.insert(path_id, transfer);
       return true;
     }
   }
+
+  false
+}
+
+fn handle_query_path_info_start(
+  _state: &mut State,
+  id: Id,
+  _text: &str,
+  fields: &[serde_json::Value],
+  _now: f64,
+) -> bool {
+  // QueryPathInfo expects 2 text fields: path, host
+  if fields.len() < 2 {
+    debug!("QueryPathInfo activity {} has insufficient fields", id);
+    return false;
+  }
+
+  // Just track the activity
+  true
+}
+
+fn handle_post_build_hook_start(
+  _state: &mut State,
+  id: Id,
+  _text: &str,
+  fields: &[serde_json::Value],
+  _now: f64,
+) -> bool {
+  // PostBuildHook expects 1 text field: derivation path
+  if fields.is_empty() {
+    debug!("PostBuildHook activity {} has no fields", id);
+    return false;
+  }
+
+  let drv_path = fields[0].as_str();
+  if let Some(drv_path) = drv_path {
+    if let Some(_drv) = Derivation::parse(drv_path) {
+      // Just track that the hook is running
+      return true;
+    }
+  }
+
   false
 }
 
@@ -596,54 +695,6 @@ fn handle_transfer_stop(state: &mut State, id: Id, now: f64) -> bool {
     }
   }
 
-  false
-}
-
-fn update_transfer_progress(
-  state: &mut State,
-  id: Id,
-  fields: &[serde_json::Value],
-) {
-  if fields.len() < 2 {
-    return;
-  }
-
-  let bytes_transferred = fields[0].as_u64().unwrap_or(0);
-  let total_bytes = fields[1].as_u64();
-
-  // Update running downloads
-  for transfer_info in state.full_summary.running_downloads.values_mut() {
-    if transfer_info.activity_id == id {
-      transfer_info.bytes_transferred = bytes_transferred;
-      transfer_info.total_bytes = total_bytes;
-      return;
-    }
-  }
-
-  // Update running uploads
-  for transfer_info in state.full_summary.running_uploads.values_mut() {
-    if transfer_info.activity_id == id {
-      transfer_info.bytes_transferred = bytes_transferred;
-      transfer_info.total_bytes = total_bytes;
-      return;
-    }
-  }
-}
-
-fn complete_build(state: &mut State, id: Id) -> bool {
-  // Find the derivation that just completed
-  for (drv_id, info) in &state.derivation_infos.clone() {
-    if let BuildStatus::Building(build_info) = &info.build_status {
-      if build_info.activity_id == Some(id) {
-        let end = current_time();
-        state.update_build_status(*drv_id, BuildStatus::Built {
-          info: build_info.clone(),
-          end,
-        });
-        return true;
-      }
-    }
-  }
   false
 }
 

@@ -35,19 +35,6 @@ pub enum Verbosity {
   Vomit     = 7,
 }
 
-/// Activity progress tracking for downloads/uploads/builds
-#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ActivityProgress {
-  /// Bytes completed
-  pub done:     u64,
-  /// Total bytes expected
-  pub expected: u64,
-  /// Currently running transfers
-  pub running:  u64,
-  /// Failed transfers
-  pub failed:   u64,
-}
-
 pub type Id = u64;
 
 #[derive(Deserialize, Debug, Clone)]

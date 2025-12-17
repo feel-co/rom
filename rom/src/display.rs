@@ -382,9 +382,9 @@ impl<W: Write> Display<W> {
       || downloading > 0
       || uploading > 0
     {
-      lines.push(self.colored(&"═".repeat(60), Color::Blue).to_string());
+      lines.push(self.colored(&"═".repeat(60), Color::Blue).clone());
       lines.push(format!("{} Build Summary", self.colored("┃", Color::Blue)));
-      lines.push(self.colored(&"─".repeat(60), Color::Blue).to_string());
+      lines.push(self.colored(&"─".repeat(60), Color::Blue).clone());
 
       // Builds section
       if running + completed + failed > 0 {
@@ -431,7 +431,7 @@ impl<W: Write> Display<W> {
         self.format_duration(duration)
       ));
 
-      lines.push(self.colored(&"═".repeat(60), Color::Blue).to_string());
+      lines.push(self.colored(&"═".repeat(60), Color::Blue).clone());
     }
 
     lines

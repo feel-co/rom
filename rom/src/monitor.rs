@@ -223,8 +223,7 @@ impl<W: Write> Monitor<W> {
               .full_summary
               .running_downloads
               .get(&path_id)
-              .map(|t| t.start)
-              .unwrap_or(now);
+              .map_or(now, |t| t.start);
 
             let completed = crate::state::CompletedTransferInfo {
               start,
@@ -405,30 +404,6 @@ fn extract_path_from_message(line: &str) -> Option<String> {
   None
 }
 
-/// Parse byte size from human-readable format (e.g., "123 KiB", "4.5 MiB")
-/// Supports: B, KiB, MiB, GiB, TiB, PiB
-fn parse_byte_size(text: &str) -> Option<u64> {
-  let parts: Vec<&str> = text.split_whitespace().collect();
-  if parts.len() < 2 {
-    return None;
-  }
-
-  let value: f64 = parts[0].parse().ok()?;
-  let unit = parts[1];
-
-  let multiplier = match unit {
-    "B" => 1_u64,
-    "KiB" => 1024,
-    "MiB" => 1024 * 1024,
-    "GiB" => 1024 * 1024 * 1024,
-    "TiB" => 1024_u64 * 1024 * 1024 * 1024,
-    "PiB" => 1024_u64 * 1024 * 1024 * 1024 * 1024,
-    _ => return None,
-  };
-
-  Some((value * multiplier as f64) as u64)
-}
-
 /// Extract byte size from a message line (e.g., "downloaded 123 KiB")
 fn extract_byte_size(line: &str) -> Option<u64> {
   // Look for patterns like "123 KiB", "6.7 MiB", etc.
@@ -481,19 +456,6 @@ mod tests {
     let line = "building /nix/store/abc123-hello-1.0.drv locally";
     let path = extract_path_from_message(line);
     assert!(path.is_some());
-  }
-
-  #[test]
-  fn test_parse_byte_size() {
-    assert_eq!(parse_byte_size("123 B"), Some(123));
-    assert_eq!(parse_byte_size("1 KiB"), Some(1024));
-    assert_eq!(parse_byte_size("1 MiB"), Some(1024 * 1024));
-    assert_eq!(parse_byte_size("1 GiB"), Some(1024 * 1024 * 1024));
-    assert_eq!(
-      parse_byte_size("2.5 MiB"),
-      Some((2.5 * 1024.0 * 1024.0) as u64)
-    );
-    assert_eq!(parse_byte_size("invalid"), None);
   }
 
   #[test]
