@@ -1,12 +1,15 @@
 //! Monitor module for orchestrating state updates and display rendering
+
 use std::{
   io::{BufRead, Write},
   time::Duration,
 };
 
 use cognos::Host;
+use tracing::debug;
 
 use crate::{
+  cache::BuildReportCache,
   display::{Display, DisplayConfig, LegendStyle, SummaryStyle},
   error::{Result, RomError},
   state::{
@@ -54,7 +57,12 @@ impl<W: Write> Monitor<W> {
     };
 
     let display = Display::new(writer, display_config)?;
-    let state = State::new();
+    let mut state = State::new();
+
+    // Load build cache for predictions
+    let cache_path = BuildReportCache::default_cache_path();
+    let cache = BuildReportCache::new(cache_path);
+    state.build_cache = cache.load();
 
     Ok(Self {
       state,
@@ -88,6 +96,14 @@ impl<W: Write> Monitor<W> {
 
     if !self.config.silent {
       self.display.render_final(&self.state)?;
+    }
+
+    // Save build cache for future predictions
+    let cache_path = BuildReportCache::default_cache_path();
+    let cache = BuildReportCache::new(cache_path);
+    if let Err(e) = cache.save(&self.state.build_cache) {
+      debug!("Failed to save build cache: {}", e);
+      // Don't fail the build if cache save fails
     }
 
     // Return error code if there were failures
@@ -140,10 +156,6 @@ impl<W: Write> Monitor<W> {
 
   /// Process a human-readable line
   fn process_human_line(&mut self, line: &str) -> Result<bool> {
-    // Parse human-readable nix output
-    // This is a simplified version - the full implementation would need
-    // comprehensive parsing of nix's output format
-
     let line = line.trim();
 
     // Skip empty lines
@@ -270,10 +282,8 @@ impl<W: Write> Monitor<W> {
       // Extract number of paths if present
       let words: Vec<&str> = line.split_whitespace().collect();
       if words.len() >= 2 {
-        if let Ok(_count) = words[1].parse::<usize>() {
-          // XXX: This is a PlanCopies message, we'll probably track this
-          // For now just acknowledge it, and let future work decide how
-          // we should go around doing it.
+        if let Ok(count) = words[1].parse::<usize>() {
+          debug!("Copying {} paths", count);
           return Ok(true);
         }
       }

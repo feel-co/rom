@@ -114,7 +114,7 @@ impl<W: Write> Display<W> {
 
     let mut lines = Vec::new();
 
-    // Print accumulated logs first (these go above the tree)
+    // Print build logs ABOVE the graph
     for log in logs {
       lines.push(log.clone());
     }
@@ -153,6 +153,8 @@ impl<W: Write> Display<W> {
   }
 
   pub fn render_final(&mut self, state: &State) -> io::Result<()> {
+    tracing::debug!("render_final called");
+
     // Clear any previous render
     self.clear_previous()?;
 
@@ -179,6 +181,8 @@ impl<W: Write> Display<W> {
         lines.extend(self.render_dashboard_final(state));
       },
     }
+
+    tracing::debug!("render_final: {} lines to print", lines.len());
 
     // Print final output (don't track last_lines since this is final)
     for line in lines {
@@ -207,8 +211,10 @@ impl<W: Write> Display<W> {
     let failed = state.full_summary.failed_builds.len();
     let planned = state.full_summary.planned_builds.len();
 
+    let duration = current_time() - state.start_time;
+
+    // Always print summary (like NOM's "Finished at HH:MM:SS after Xs")
     if running > 0 || completed > 0 || failed > 0 || planned > 0 {
-      let duration = current_time() - state.start_time;
       lines.push(format!(
         "{} {} {} │ {} {} │ {} {} │ {} {} │ {} {}",
         self.colored("━", Color::Blue),
@@ -222,6 +228,18 @@ impl<W: Write> Display<W> {
         planned,
         self.colored("⏱", Color::Grey),
         self.format_duration(duration)
+      ));
+    } else {
+      // Nothing built - just show "Finished after Xs"
+      let now = chrono::Local::now();
+      let time_str = now.format("%H:%M:%S");
+      lines.push(format!(
+        "{} {}",
+        self.colored(&format!("Finished at {time_str}"), Color::Green),
+        self.colored(
+          &format!("after {}", self.format_duration(duration)),
+          Color::Green
+        )
       ));
     }
 
@@ -680,11 +698,23 @@ impl<W: Write> Display<W> {
       if let Some(info) = state.get_derivation_info(*drv_id) {
         let name = &info.name.name;
         let elapsed = current_time() - build.start;
+
+        // Format time info
+        let mut time_info = String::new();
+        if let Some(estimate_secs) = build.estimate {
+          let remaining = estimate_secs.saturating_sub(elapsed as u64);
+          time_info.push_str(&format!(
+            "∅ {} ",
+            self.format_duration(remaining as f64)
+          ));
+        }
+        time_info.push_str(&self.format_duration(elapsed));
+
         lines.push(format!(
           "  {} {} {}",
           self.colored("⏵", Color::Yellow),
           name,
-          self.format_duration(elapsed)
+          time_info
         ));
       }
     }
@@ -954,8 +984,19 @@ impl<W: Write> Display<W> {
         }
       }
 
-      // Time elapsed
+      // Time information
       let elapsed = current_time() - build_info.start;
+
+      // Show estimate if available
+      if let Some(estimate_secs) = build_info.estimate {
+        let remaining = estimate_secs.saturating_sub(elapsed as u64);
+        line.push_str(&self.colored(
+          &format!(" ∅ {}", self.format_duration(remaining as f64)),
+          Color::DarkGrey,
+        ));
+      }
+
+      // Show elapsed time
       line.push_str(&self.colored(
         &format!(" ⏱ {}", self.format_duration(elapsed)),
         Color::DarkGrey,

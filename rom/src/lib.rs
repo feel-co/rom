@@ -1,4 +1,5 @@
 //! ROM - Rust Output Monitor
+pub mod cache;
 pub mod cli;
 pub mod display;
 pub mod error;

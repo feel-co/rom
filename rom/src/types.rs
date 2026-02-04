@@ -11,6 +11,17 @@ pub enum DisplayFormat {
   Dashboard,
 }
 
+/// Log prefix style for build logs
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LogPrefixStyle {
+  /// Just package name (pname)
+  Short,
+  /// Full derivation name with version
+  Full,
+  /// No prefix
+  None,
+}
+
 /// Summary display style
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SummaryStyle {
@@ -34,6 +45,18 @@ impl SummaryStyle {
   }
 }
 
+impl LogPrefixStyle {
+  #[must_use]
+  pub fn from_str(s: &str) -> Self {
+    match s.to_lowercase().as_str() {
+      "short" => Self::Short,
+      "full" => Self::Full,
+      "none" => Self::None,
+      _ => Self::Short,
+    }
+  }
+}
+
 impl DisplayFormat {
   #[must_use]
   pub fn from_str(s: &str) -> Self {
@@ -50,34 +73,40 @@ impl DisplayFormat {
 #[derive(Debug, Clone)]
 pub struct Config {
   /// Whether we're piping output through
-  pub piping:        bool,
+  pub piping:           bool,
   /// Silent mode - minimal output
-  pub silent:        bool,
+  pub silent:           bool,
   /// Input parsing mode
-  pub input_mode:    InputMode,
+  pub input_mode:       InputMode,
   /// Show completion times
-  pub show_timers:   bool,
+  pub show_timers:      bool,
   /// Terminal width override
-  pub width:         Option<usize>,
+  pub width:            Option<usize>,
   /// Display format
-  pub format:        DisplayFormat,
+  pub format:           DisplayFormat,
   /// Legend display style
-  pub legend_style:  String,
+  pub legend_style:     String,
   /// Summary display style
-  pub summary_style: String,
+  pub summary_style:    String,
+  /// Log prefix style for build logs
+  pub log_prefix_style: LogPrefixStyle,
+  /// Maximum number of log lines to display (None = unlimited)
+  pub log_line_limit:   Option<usize>,
 }
 
 impl Default for Config {
   fn default() -> Self {
     Self {
-      piping:        false,
-      silent:        false,
-      input_mode:    InputMode::Human,
-      show_timers:   true,
-      width:         None,
-      format:        DisplayFormat::Tree,
-      legend_style:  "table".to_string(),
-      summary_style: "concise".to_string(),
+      piping:           false,
+      silent:           false,
+      input_mode:       InputMode::Human,
+      show_timers:      true,
+      width:            None,
+      format:           DisplayFormat::Tree,
+      legend_style:     "table".to_string(),
+      summary_style:    "concise".to_string(),
+      log_prefix_style: LogPrefixStyle::Short,
+      log_line_limit:   None,
     }
   }
 }
@@ -103,6 +132,8 @@ mod tests {
     assert_eq!(config.input_mode, InputMode::Human);
     assert!(config.show_timers);
     assert_eq!(config.format, DisplayFormat::Tree);
+    assert_eq!(config.log_prefix_style, LogPrefixStyle::Short);
+    assert_eq!(config.log_line_limit, None);
   }
 
   #[test]

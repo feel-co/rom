@@ -33,6 +33,14 @@ pub struct Cli {
   /// Summary display style: concise, table, full
   #[arg(long, global = true, default_value = "concise")]
   pub summary: String,
+
+  /// Log prefix style: short, full, none
+  #[arg(long, global = true, default_value = "short")]
+  pub log_prefix: String,
+
+  /// Maximum number of log lines to display
+  #[arg(long, global = true)]
+  pub log_lines: Option<usize>,
 }
 
 #[derive(Debug, clap::Subcommand)]
@@ -86,6 +94,8 @@ pub fn run() -> eyre::Result<()> {
         cli.format.clone(),
         cli.legend.clone(),
         cli.summary.clone(),
+        cli.log_prefix.clone(),
+        cli.log_lines,
       )?;
       Ok(())
     },
@@ -101,6 +111,8 @@ pub fn run() -> eyre::Result<()> {
         cli.format.clone(),
         cli.legend.clone(),
         cli.summary.clone(),
+        cli.log_prefix.clone(),
+        cli.log_lines,
       )?;
       Ok(())
     },
@@ -110,14 +122,18 @@ pub fn run() -> eyre::Result<()> {
       // If no args provided and --json is set, use piping mode from stdin
       if args.is_empty() && cli.json {
         let config = crate::types::Config {
-          piping:        false,
-          silent:        cli.silent,
-          input_mode:    crate::types::InputMode::Json,
-          show_timers:   true,
-          width:         None,
-          format:        crate::types::DisplayFormat::from_str(&cli.format),
-          legend_style:  cli.legend.clone(),
-          summary_style: cli.summary.clone(),
+          piping:           false,
+          silent:           cli.silent,
+          input_mode:       crate::types::InputMode::Json,
+          show_timers:      true,
+          width:            None,
+          format:           crate::types::DisplayFormat::from_str(&cli.format),
+          legend_style:     cli.legend.clone(),
+          summary_style:    cli.summary.clone(),
+          log_prefix_style: crate::types::LogPrefixStyle::from_str(
+            &cli.log_prefix,
+          ),
+          log_line_limit:   cli.log_lines,
         };
 
         let stdin = io::stdin();
@@ -140,6 +156,8 @@ pub fn run() -> eyre::Result<()> {
         cli.format.clone(),
         cli.legend.clone(),
         cli.summary.clone(),
+        cli.log_prefix.clone(),
+        cli.log_lines,
       )?;
       Ok(())
     },
@@ -149,14 +167,18 @@ pub fn run() -> eyre::Result<()> {
       // If no args provided and --json is set, use piping mode from stdin
       if args.is_empty() && cli.json {
         let config = crate::types::Config {
-          piping:        false,
-          silent:        cli.silent,
-          input_mode:    crate::types::InputMode::Json,
-          show_timers:   true,
-          width:         None,
-          format:        crate::types::DisplayFormat::from_str(&cli.format),
-          legend_style:  cli.legend.clone(),
-          summary_style: cli.summary.clone(),
+          piping:           false,
+          silent:           cli.silent,
+          input_mode:       crate::types::InputMode::Json,
+          show_timers:      true,
+          width:            None,
+          format:           crate::types::DisplayFormat::from_str(&cli.format),
+          legend_style:     cli.legend.clone(),
+          summary_style:    cli.summary.clone(),
+          log_prefix_style: crate::types::LogPrefixStyle::from_str(
+            &cli.log_prefix,
+          ),
+          log_line_limit:   cli.log_lines,
         };
 
         let stdin = io::stdin();
@@ -179,6 +201,8 @@ pub fn run() -> eyre::Result<()> {
         cli.format.clone(),
         cli.legend.clone(),
         cli.summary.clone(),
+        cli.log_prefix.clone(),
+        cli.log_lines,
       )?;
       Ok(())
     },
@@ -188,14 +212,18 @@ pub fn run() -> eyre::Result<()> {
       // If no args provided and --json is set, use piping mode from stdin
       if args.is_empty() && cli.json {
         let config = crate::types::Config {
-          piping:        false,
-          silent:        cli.silent,
-          input_mode:    crate::types::InputMode::Json,
-          show_timers:   true,
-          width:         None,
-          format:        crate::types::DisplayFormat::from_str(&cli.format),
-          legend_style:  cli.legend.clone(),
-          summary_style: cli.summary.clone(),
+          piping:           false,
+          silent:           cli.silent,
+          input_mode:       crate::types::InputMode::Json,
+          show_timers:      true,
+          width:            None,
+          format:           crate::types::DisplayFormat::from_str(&cli.format),
+          legend_style:     cli.legend.clone(),
+          summary_style:    cli.summary.clone(),
+          log_prefix_style: crate::types::LogPrefixStyle::from_str(
+            &cli.log_prefix,
+          ),
+          log_line_limit:   cli.log_lines,
         };
 
         let stdin = io::stdin();
@@ -218,6 +246,8 @@ pub fn run() -> eyre::Result<()> {
         cli.format.clone(),
         cli.legend.clone(),
         cli.summary.clone(),
+        cli.log_prefix.clone(),
+        cli.log_lines,
       )?;
       Ok(())
     },
@@ -239,6 +269,10 @@ pub fn run() -> eyre::Result<()> {
         format: crate::types::DisplayFormat::from_str(&cli.format),
         legend_style: cli.legend.clone(),
         summary_style: cli.summary.clone(),
+        log_prefix_style: crate::types::LogPrefixStyle::from_str(
+          &cli.log_prefix,
+        ),
+        log_line_limit: cli.log_lines,
       };
 
       let stdin = io::stdin();
@@ -280,6 +314,8 @@ fn run_nix_build_wrapper(
   format: String,
   legend_style: String,
   summary_style: String,
+  log_prefix: String,
+  log_lines: Option<usize>,
 ) -> eyre::Result<()> {
   // Validate that at least one package/flake is specified
   if package_and_rom_args.is_empty() {
@@ -310,6 +346,8 @@ fn run_nix_build_wrapper(
     format,
     legend_style,
     summary_style,
+    crate::types::LogPrefixStyle::from_str(&log_prefix),
+    log_lines,
   )?;
   if exit_code != 0 {
     std::process::exit(exit_code);
@@ -325,6 +363,8 @@ fn run_nix_shell_wrapper(
   format: String,
   legend_style: String,
   summary_style: String,
+  log_prefix: String,
+  log_lines: Option<usize>,
 ) -> eyre::Result<()> {
   // Validate that at least one package/flake is specified
   if package_and_rom_args.is_empty() {
@@ -360,6 +400,8 @@ fn run_nix_shell_wrapper(
     format,
     legend_style,
     summary_style,
+    crate::types::LogPrefixStyle::from_str(&log_prefix),
+    log_lines,
   )?;
 
   if exit_code != 0 {
@@ -391,6 +433,8 @@ fn run_nix_develop_wrapper(
   format: String,
   legend_style: String,
   summary_style: String,
+  log_prefix: String,
+  log_lines: Option<usize>,
 ) -> eyre::Result<()> {
   // Validate that at least one package/flake is specified (can be empty for
   // current flake) develop without args is valid (uses current directory's
@@ -419,6 +463,8 @@ fn run_nix_develop_wrapper(
     format,
     legend_style,
     summary_style,
+    crate::types::LogPrefixStyle::from_str(&log_prefix),
+    log_lines,
   )?;
 
   if exit_code != 0 {
@@ -450,6 +496,8 @@ fn run_monitored_command(
   format_str: String,
   legend_style_str: String,
   summary_style_str: String,
+  log_prefix_style: crate::types::LogPrefixStyle,
+  log_line_limit: Option<usize>,
 ) -> eyre::Result<i32> {
   use std::{
     io::{BufRead, BufReader},
@@ -481,6 +529,13 @@ fn run_monitored_command(
   let start_time = Arc::new(Mutex::new(crate::state::current_time()));
   let start_time_clone = start_time.clone();
 
+  // Buffer for build logs - collected and passed to Display for coordinated
+  // rendering
+  let log_buffer =
+    Arc::new(Mutex::new(std::collections::VecDeque::<String>::new()));
+  let log_buffer_clone = log_buffer.clone();
+  let log_buffer_render = log_buffer.clone();
+
   // Spawn thread to read and parse stderr (where nix outputs logs)
   let stderr_thread = thread::spawn(move || {
     use tracing::debug;
@@ -495,19 +550,62 @@ fn run_monitored_command(
         if let Ok(action) = serde_json::from_str::<cognos::Actions>(json_line) {
           debug!("Parsed JSON message #{}: {:?}", json_count, action);
 
-          // Print messages immediately to stdout
-          if let cognos::Actions::Message { msg, .. } = &action {
-            println!("{msg}");
-          }
-
+          // Process the action first to update state
           let mut state = state_clone.lock().unwrap();
           let derivation_count_before = state.derivation_infos.len();
-          crate::update::process_message(&mut state, action);
+          crate::update::process_message(&mut state, action.clone());
           crate::update::maintain_state(
             &mut state,
             crate::state::current_time(),
           );
           let derivation_count_after = state.derivation_infos.len();
+
+          // Now handle build log messages after state is updated
+          // Buffer them for coordinated rendering with the display
+          match &action {
+            cognos::Actions::Message { msg, .. } => {
+              let mut logs = log_buffer_clone.lock().unwrap();
+              logs.push_back(msg.clone());
+              // Keep only recent logs based on limit
+              if let Some(limit) = log_line_limit {
+                while logs.len() > limit {
+                  logs.pop_front();
+                }
+              }
+            },
+            cognos::Actions::Result {
+              fields,
+              activity,
+              id,
+            } => {
+              // Build log lines come as Result actions with FileTransfer
+              // activity (101) and fields containing just the log
+              // text: fields = ["log line text"]
+              if matches!(activity, cognos::Activities::FileTransfer)
+                && !fields.is_empty()
+              {
+                if let Some(log_text) = fields[0].as_str() {
+                  // Get the activity prefix (e.g., "hello> ")
+                  let use_color = !silent;
+                  let prefix = state
+                    .get_activity_prefix(*id, &log_prefix_style, use_color)
+                    .unwrap_or_default();
+
+                  let prefixed_log = format!("{prefix}{log_text}");
+                  let mut logs = log_buffer_clone.lock().unwrap();
+                  logs.push_back(prefixed_log);
+                  // Keep only recent logs based on limit
+                  if let Some(limit) = log_line_limit {
+                    while logs.len() > limit {
+                      logs.pop_front();
+                    }
+                  }
+                }
+              }
+            },
+            _ => {},
+          }
+
           if derivation_count_after != derivation_count_before {
             debug!(
               "Derivation count changed: {} -> {}",
@@ -518,9 +616,16 @@ fn run_monitored_command(
           debug!("Failed to parse JSON: {}", json_line);
         }
       } else {
-        // Non-JSON lines, pass through
+        // Non-JSON lines, buffer them
         non_json_count += 1;
-        println!("{line}");
+        let mut logs = log_buffer_clone.lock().unwrap();
+        logs.push_back(line.clone());
+        // Keep only recent logs based on limit
+        if let Some(limit) = log_line_limit {
+          while logs.len() > limit {
+            logs.pop_front();
+          }
+        }
       }
     }
     debug!(
@@ -583,13 +688,16 @@ fn run_monitored_command(
         || !state.full_summary.planned_builds.is_empty();
 
       if !silent {
+        // Get buffered logs for coordinated rendering
+        let logs: Vec<String> =
+          log_buffer_render.lock().unwrap().iter().cloned().collect();
+
         if has_activity || state.progress_state != ProgressState::JustStarted {
           // Clear any previous timer display
           if last_timer_display.is_some() {
-            display.clear_previous().ok();
             last_timer_display = None;
           }
-          let _ = display.render(&state, &[]);
+          let _ = display.render(&state, &logs);
         } else {
           // Show initial timer while waiting for activity
           let start = *start_time_clone.lock().unwrap();
@@ -599,8 +707,7 @@ fn run_monitored_command(
 
           // Only update if changed (to avoid flicker)
           if last_timer_display.as_ref() != Some(&timer_text) {
-            display.clear_previous().ok();
-            eprintln!("{timer_text}");
+            let _ = display.render(&state, &logs);
             last_timer_display = Some(timer_text);
           }
         }

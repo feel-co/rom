@@ -3,25 +3,29 @@
 use cognos::{Actions, Activities, Host, Id, ProgressState, Verbosity};
 use tracing::{debug, trace};
 
-use crate::state::{
-  ActivityProgress,
-  ActivityStatus,
-  BuildFail,
-  BuildInfo,
-  BuildStatus,
-  CompletedBuildInfo,
-  CompletedTransferInfo,
-  Derivation,
-  DerivationId,
-  FailType,
-  FailedBuildInfo,
-  InputDerivation,
-  State,
-  StorePath,
-  StorePathId,
-  StorePathState,
-  TransferInfo,
-  current_time,
+use crate::{
+  cache::BuildReportCache,
+  state::{
+    ActivityProgress,
+    ActivityStatus,
+    BuildFail,
+    BuildInfo,
+    BuildReport,
+    BuildStatus,
+    CompletedBuildInfo,
+    CompletedTransferInfo,
+    Derivation,
+    DerivationId,
+    FailType,
+    FailedBuildInfo,
+    InputDerivation,
+    State,
+    StorePath,
+    StorePathId,
+    StorePathState,
+    TransferInfo,
+    current_time,
+  },
 };
 
 /// Process a nix JSON message and update state
@@ -96,10 +100,19 @@ fn handle_start(
     109 => handle_query_path_info_start(state, id, &text, &fields, now), /* QueryPathInfo */
     110 => handle_post_build_hook_start(state, id, &text, &fields, now), /* PostBuildHook */
     101 => handle_file_transfer_start(state, id, &text, &fields, now), /* FileTransfer */
-    100 => handle_copy_path_start(state, id, &text, &fields, now), // CopyPath
-    102 | 103 | 104 | 106 | 107 | 111 | 112 => {
-      // Realise, CopyPaths, Builds, OptimiseStore, VerifyPaths, BuildWaiting,
-      // FetchTree These activities have no fields and are just tracked
+    100 => handle_copy_path_start(state, id, &text, &fields, now), /* CopyPath */
+    104 => {
+      // Builds activity - track this as the top-level builds activity
+      if state.builds_activity.is_none() {
+        state.builds_activity = Some(id);
+        true
+      } else {
+        false
+      }
+    },
+    102 | 103 | 106 | 107 | 111 | 112 => {
+      // Realise, CopyPaths, OptimiseStore, VerifyPaths, BuildWaiting, FetchTree
+      // These activities have no fields and are just tracked
       true
     },
     _ => {
@@ -281,11 +294,12 @@ fn handle_result(
 
   match result_type {
     100 => {
-      // FileLinked: 2 int fields
+      // FileLinked: 2 int fields (linked count, total count)
       if fields.len() >= 2 {
-        let _linked = fields[0].as_u64();
-        let _total = fields[1].as_u64();
-        // TODO: Track file linking progress
+        let linked = fields[0].as_u64().unwrap_or(0);
+        let total = fields[1].as_u64().unwrap_or(0);
+        debug!("FileLinked: {}/{}", linked, total);
+        // File linking is reported but doesn't need state tracking
       }
       false
     },
@@ -300,17 +314,18 @@ fn handle_result(
     102 => {
       // UntrustedPath: 1 text field (store path)
       if let Some(path_str) = fields.first().and_then(|f| f.as_str()) {
-        debug!("Untrusted path: {}", path_str);
-        // TODO: Track untrusted paths
+        debug!("Untrusted path reported: {}", path_str);
+        state
+          .nix_errors
+          .push(format!("Untrusted path: {}", path_str));
+        return true;
       }
       false
     },
     103 => {
       // CorruptedPath: 1 text field (store path)
       if let Some(path_str) = fields.first().and_then(|f| f.as_str()) {
-        state
-          .nix_errors
-          .push(format!("Corrupted path: {path_str}"));
+        state.nix_errors.push(format!("Corrupted path: {path_str}"));
         return true;
       }
       false
@@ -334,6 +349,19 @@ fn handle_result(
           fields[2].as_u64(),
           fields[3].as_u64(),
         ) {
+          // If this progress is for the Builds activity, track success tokens
+          if state.builds_activity == Some(id) {
+            if let Some(activity) = state.activities.get(&id) {
+              if let Some(prev_progress) = &activity.progress {
+                let new_done = done.saturating_sub(prev_progress.done);
+                if new_done > 0 {
+                  state.success_tokens =
+                    state.success_tokens.saturating_add(new_done);
+                }
+              }
+            }
+          }
+
           if let Some(activity) = state.activities.get_mut(&id) {
             activity.progress = Some(ActivityProgress {
               done,
@@ -350,9 +378,13 @@ fn handle_result(
     106 => {
       // SetExpected: 2 int fields (activity type, count)
       if fields.len() >= 2 {
-        let _activity_type = fields[0].as_u64();
-        let _expected_count = fields[1].as_u64();
-        // TODO: Track expected counts
+        let activity_type = fields[0].as_u64().unwrap_or(0);
+        let expected_count = fields[1].as_u64().unwrap_or(0);
+        debug!(
+          "SetExpected: activity_type={}, count={}",
+          activity_type, expected_count
+        );
+        // Expected counts are informational and don't affect state tracking
       }
       false
     },
@@ -368,7 +400,7 @@ fn handle_result(
       // FetchStatus: 1 text field
       if let Some(status) = fields.first().and_then(|f| f.as_str()) {
         debug!("Fetch status: {}", status);
-        // TODO: Track fetch status
+        // Fetch status is informational
       }
       false
     },
@@ -377,6 +409,50 @@ fn handle_result(
       false
     },
   }
+}
+
+/// Get build time estimate from cache
+fn get_build_estimate(
+  state: &State,
+  derivation_name: &str,
+  host: &Host,
+) -> Option<u64> {
+  // Use pname if available, otherwise derivation name
+  let lookup_name = derivation_name.to_string();
+  let host_str = host.name();
+
+  BuildReportCache::calculate_median(
+    state
+      .build_cache
+      .get(&(host_str.to_string(), lookup_name))?
+      .as_slice(),
+  )
+}
+
+/// Record completed build for future predictions
+fn record_build_completion(
+  state: &mut State,
+  derivation_name: String,
+  platform: Option<String>,
+  start: f64,
+  end: f64,
+  host: &Host,
+) {
+  let duration_secs = end - start;
+  let completed_at = std::time::SystemTime::now();
+
+  let report = BuildReport {
+    derivation_name: derivation_name.clone(),
+    platform: platform.unwrap_or_default(),
+    duration_secs,
+    completed_at,
+    host: host.name().to_string(),
+    success: true,
+  };
+
+  // Store in state for later CSV persistence
+  let key = (host.name().to_string(), derivation_name);
+  state.build_cache.entry(key).or_default().push(report);
 }
 
 fn handle_build_start(
@@ -402,13 +478,16 @@ fn handle_build_start(
   if let Some(drv_path) = drv_path {
     debug!("Extracted derivation path: {}", drv_path);
     if let Some(drv) = Derivation::parse(&drv_path) {
-      let drv_id = state.get_or_create_derivation_id(drv);
+      let drv_id = state.get_or_create_derivation_id(drv.clone());
       let host = extract_host(text);
+
+      // Get build time estimate from cache
+      let estimate = get_build_estimate(state, &drv.name, &host);
 
       let build_info = BuildInfo {
         start: now,
         host,
-        estimate: None,
+        estimate,
         activity_id: Some(id),
       };
 
@@ -444,21 +523,42 @@ fn handle_build_start(
   false
 }
 
-fn handle_build_stop(state: &mut State, id: Id, _now: f64) -> bool {
-  // Find the derivation associated with this activity
-  for (drv_id, info) in &state.derivation_infos {
-    match &info.build_status {
-      BuildStatus::Building(build_info)
-        if build_info.activity_id == Some(id) =>
-      {
-        // Build was stopped but not marked as completed
-        // It might be cancelled
-        debug!("Build stopped for derivation {}", drv_id);
-        return false;
-      },
-      _ => {},
+fn handle_build_stop(state: &mut State, id: Id, now: f64) -> bool {
+  // Check if we have success tokens to consume
+  if state.success_tokens > 0 {
+    // Find the derivation associated with this activity
+    for (drv_id, info) in state.derivation_infos.clone().iter() {
+      if let BuildStatus::Building(build_info) = &info.build_status {
+        if build_info.activity_id == Some(id) {
+          // Consume a success token and mark build as complete
+          state.success_tokens = state.success_tokens.saturating_sub(1);
+          state.update_build_status(*drv_id, BuildStatus::Built {
+            info: build_info.clone(),
+            end:  now,
+          });
+
+          // Record build completion for future predictions
+          record_build_completion(
+            state,
+            info.name.name.clone(),
+            info.platform.clone(),
+            build_info.start,
+            now,
+            &build_info.host,
+          );
+
+          debug!(
+            "Build completed for derivation {} (success_tokens: {})",
+            drv_id, state.success_tokens
+          );
+          return true;
+        }
+      }
     }
   }
+
+  // No success tokens - build was stopped without completion signal
+  debug!("Build stopped for activity {} without success token", id);
   false
 }
 

@@ -7,7 +7,7 @@ version = "0.1.0"
 edition = "2024"
 authors = ["NotAShelf <raf@notashelf.dev>"]
 description = "Pretty build graphs for Nix builds"
-rust-version = "1.85"
+rust-version = "1.91.1"
 
 [workspace.dependencies]
 anyhow = "1.0.100"
@@ -19,6 +19,7 @@ crossterm = "0.29.0"
 ratatui = "0.29.0"
 indexmap = { version = "2.12.0", features = ["serde"] }
 csv = "1.4.0"
+chrono = "0.4.42"
 thiserror = "2.0.17"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }

@@ -360,6 +360,7 @@ pub struct State {
   pub full_summary:     DependencySummary,
   pub forest_roots:     Vec<DerivationId>,
   pub build_reports:    HashMap<String, Vec<BuildReport>>,
+  pub build_cache:      HashMap<(String, String), Vec<BuildReport>>,
   pub start_time:       f64,
   pub progress_state:   ProgressState,
   pub store_path_ids:   HashMap<StorePath, StorePathId>,
@@ -371,6 +372,8 @@ pub struct State {
   pub traces:           Vec<String>,
   pub build_platform:   Option<String>,
   pub evaluation_state: EvalInfo,
+  pub builds_activity:  Option<ActivityId>,
+  pub success_tokens:   u64,
   next_store_path_id:   StorePathId,
   next_derivation_id:   DerivationId,
 }
@@ -390,6 +393,7 @@ impl State {
       full_summary:       DependencySummary::default(),
       forest_roots:       Vec::new(),
       build_reports:      HashMap::new(),
+      build_cache:        HashMap::new(),
       start_time:         current_time(),
       progress_state:     ProgressState::JustStarted,
       store_path_ids:     HashMap::new(),
@@ -401,6 +405,8 @@ impl State {
       traces:             Vec::new(),
       build_platform:     None,
       evaluation_state:   EvalInfo::default(),
+      builds_activity:    None,
+      success_tokens:     0,
       next_store_path_id: 0,
       next_derivation_id: 0,
     }
@@ -697,6 +703,106 @@ impl State {
       .copied()
       .collect()
   }
+
+  /// Get the activity prefix for a given activity ID by walking up the parent
+  /// chain to find a Build activity and extracting its derivation name.
+  /// Returns a prefix like "hello> " suitable for prepending to log lines.
+  /// If `use_color` is true and stderr is a TTY, the prefix will be blue.
+  /// The `prefix_style` determines whether to use short (pname only), full, or
+  /// no prefix.
+  #[must_use]
+  pub fn get_activity_prefix(
+    &self,
+    activity_id: ActivityId,
+    prefix_style: &crate::types::LogPrefixStyle,
+    use_color: bool,
+  ) -> Option<String> {
+    use cognos::Activities;
+
+    use crate::types::LogPrefixStyle;
+
+    // If prefix style is None, return empty string
+    if matches!(prefix_style, LogPrefixStyle::None) {
+      return Some(String::new());
+    }
+
+    let mut current_id = activity_id;
+    let max_depth = 10; // Prevent infinite loops
+    let mut depth = 0;
+
+    while depth < max_depth {
+      if let Some(activity) = self.activities.get(&current_id) {
+        // Check if this is a Build activity (type 105)
+        if activity.activity == Activities::Build as u8 {
+          // Extract derivation path from the text field
+          // The text field typically contains something like:
+          // "building '/nix/store/...-hello-2.10.drv'"
+          if let Some(drv) = extract_derivation_from_text(&activity.text) {
+            // Look up the DerivationInfo for this derivation
+            let drv_id = self.derivation_ids.get(&drv);
+            let name = if matches!(prefix_style, LogPrefixStyle::Short) {
+              // Try to use pname if available
+              if let Some(id) = drv_id {
+                if let Some(drv_info) = self.derivation_infos.get(id) {
+                  if let Some(pname) = &drv_info.pname {
+                    pname.clone()
+                  } else {
+                    drv.name.clone()
+                  }
+                } else {
+                  drv.name.clone()
+                }
+              } else {
+                drv.name.clone()
+              }
+            } else {
+              // Full style - use full derivation name
+              drv.name.clone()
+            };
+
+            // Apply color if requested and stderr is a TTY
+            let colored_name = if use_color
+              && std::io::IsTerminal::is_terminal(&std::io::stderr())
+            {
+              format!("\x1b[34m{name}\x1b[0m")
+            } else {
+              name
+            };
+
+            return Some(format!("{colored_name}> "));
+          }
+        }
+
+        // Move to parent activity
+        if let Some(parent_id) = activity.parent {
+          if parent_id == 0 {
+            break; // Reached root
+          }
+          current_id = parent_id;
+          depth += 1;
+        } else {
+          break;
+        }
+      } else {
+        break;
+      }
+    }
+
+    None
+  }
+}
+
+/// Extract derivation from activity text like "building
+/// '/nix/store/...-hello-2.10.drv'" Returns the Derivation object
+fn extract_derivation_from_text(text: &str) -> Option<Derivation> {
+  // Look for .drv path in text
+  if let Some(start) = text.find("/nix/store/") {
+    if let Some(end) = text[start..].find(".drv") {
+      let drv_path = &text[start..start + end + 4]; // Include .drv
+      return Derivation::parse(drv_path);
+    }
+  }
+  None
 }
 
 #[must_use]
