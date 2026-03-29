@@ -1,7 +1,29 @@
 //! Core types for ROM
 
+/// Legend display style
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LegendStyle {
+  /// Compact single-line legend
+  Compact,
+  /// Table with host columns
+  Table,
+  /// Verbose full legend
+  Verbose,
+}
+
+impl LegendStyle {
+  #[must_use]
+  pub fn from_str(s: &str) -> Self {
+    match s.to_lowercase().as_str() {
+      "compact" => Self::Compact,
+      "verbose" => Self::Verbose,
+      _ => Self::Table,
+    }
+  }
+}
+
 /// Display format for output
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DisplayFormat {
   /// Show dependency tree graph
   Tree,
@@ -12,7 +34,7 @@ pub enum DisplayFormat {
 }
 
 /// Log prefix style for build logs
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogPrefixStyle {
   /// Just package name (pname)
   Short,
@@ -23,7 +45,7 @@ pub enum LogPrefixStyle {
 }
 
 /// Summary display style
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SummaryStyle {
   /// Concise single-line summary
   Concise,
@@ -85,9 +107,9 @@ pub struct Config {
   /// Display format
   pub format:           DisplayFormat,
   /// Legend display style
-  pub legend_style:     String,
+  pub legend_style:     LegendStyle,
   /// Summary display style
-  pub summary_style:    String,
+  pub summary_style:    SummaryStyle,
   /// Log prefix style for build logs
   pub log_prefix_style: LogPrefixStyle,
   /// Maximum number of log lines to display (None = unlimited)
@@ -103,8 +125,8 @@ impl Default for Config {
       show_timers:      true,
       width:            None,
       format:           DisplayFormat::Tree,
-      legend_style:     "table".to_string(),
-      summary_style:    "concise".to_string(),
+      legend_style:     LegendStyle::Table,
+      summary_style:    SummaryStyle::Concise,
       log_prefix_style: LogPrefixStyle::Short,
       log_line_limit:   None,
     }

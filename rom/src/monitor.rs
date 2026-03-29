@@ -10,16 +10,9 @@ use tracing::debug;
 
 use crate::{
   cache::BuildReportCache,
-  display::{Display, DisplayConfig, LegendStyle, SummaryStyle},
+  display::{Display, DisplayConfig},
   error::{Result, RomError},
-  state::{
-    BuildStatus,
-    Derivation,
-    FailType,
-    State,
-    StorePath,
-    StorePathState,
-  },
+  state::{BuildStatus, Derivation, FailType, State, StorePath},
   types::{Config, InputMode},
   update,
 };
@@ -34,26 +27,14 @@ pub struct Monitor<W: Write> {
 impl<W: Write> Monitor<W> {
   /// Create a new monitor
   pub fn new(config: Config, writer: W) -> Result<Self> {
-    let legend_style = match config.legend_style.to_lowercase().as_str() {
-      "compact" => LegendStyle::Compact,
-      "verbose" => LegendStyle::Verbose,
-      _ => LegendStyle::Table,
-    };
-
-    let summary_style = match config.summary_style.to_lowercase().as_str() {
-      "table" => SummaryStyle::Table,
-      "full" => SummaryStyle::Full,
-      _ => SummaryStyle::Concise,
-    };
-
     let display_config = DisplayConfig {
-      show_timers: config.show_timers,
-      max_tree_depth: 10,
+      show_timers:       config.show_timers,
+      max_tree_depth:    10,
       max_visible_lines: 100,
-      use_color: !config.piping,
-      format: config.format.clone(),
-      legend_style,
-      summary_style,
+      use_color:         !config.piping,
+      format:            config.format,
+      legend_style:      config.legend_style,
+      summary_style:     config.summary_style,
     };
 
     let display = Display::new(writer, display_config)?;
@@ -204,12 +185,6 @@ impl<W: Write> Monitor<W> {
             total_bytes,
           };
 
-          if let Some(path_info) = self.state.get_store_path_info_mut(path_id) {
-            path_info
-              .states
-              .insert(StorePathState::Downloading(transfer.clone()));
-          }
-
           self
             .state
             .full_summary
@@ -243,13 +218,6 @@ impl<W: Write> Monitor<W> {
               host: Host::Localhost,
               total_bytes,
             };
-
-            if let Some(path_info) = self.state.get_store_path_info_mut(path_id)
-            {
-              path_info
-                .states
-                .insert(StorePathState::Downloaded(completed.clone()));
-            }
 
             self.state.full_summary.running_downloads.remove(&path_id);
             self
