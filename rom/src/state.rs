@@ -100,37 +100,12 @@ pub struct CompletedTransferInfo {
   pub total_bytes: u64,
 }
 
-/// Store path state
-#[derive(Debug, Clone)]
-pub enum StorePathState {
-  DownloadPlanned,
-  Downloading(TransferInfo),
-  Uploading(TransferInfo),
-  Downloaded(CompletedTransferInfo),
-  Uploaded(CompletedTransferInfo),
-}
-
 /// Store path information
 #[derive(Debug, Clone)]
 pub struct StorePathInfo {
   pub name:      StorePath,
-  pub states:    HashSet<StorePathState>,
   pub producer:  Option<DerivationId>,
   pub input_for: HashSet<DerivationId>,
-}
-
-impl PartialEq for StorePathState {
-  fn eq(&self, other: &Self) -> bool {
-    std::mem::discriminant(self) == std::mem::discriminant(other)
-  }
-}
-
-impl Eq for StorePathState {}
-
-impl std::hash::Hash for StorePathState {
-  fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-    std::mem::discriminant(self).hash(state);
-  }
 }
 
 /// Build information
@@ -359,7 +334,6 @@ pub struct State {
   pub store_path_infos: IndexMap<StorePathId, StorePathInfo>,
   pub full_summary:     DependencySummary,
   pub forest_roots:     Vec<DerivationId>,
-  pub build_reports:    HashMap<String, Vec<BuildReport>>,
   pub build_cache:      HashMap<(String, String), Vec<BuildReport>>,
   pub start_time:       f64,
   pub progress_state:   ProgressState,
@@ -373,7 +347,6 @@ pub struct State {
   pub build_platform:   Option<String>,
   pub evaluation_state: EvalInfo,
   pub builds_activity:  Option<ActivityId>,
-  pub success_tokens:   u64,
   next_store_path_id:   StorePathId,
   next_derivation_id:   DerivationId,
 }
@@ -392,7 +365,6 @@ impl State {
       store_path_infos:   IndexMap::new(),
       full_summary:       DependencySummary::default(),
       forest_roots:       Vec::new(),
-      build_reports:      HashMap::new(),
       build_cache:        HashMap::new(),
       start_time:         current_time(),
       progress_state:     ProgressState::JustStarted,
@@ -406,7 +378,6 @@ impl State {
       build_platform:     None,
       evaluation_state:   EvalInfo::default(),
       builds_activity:    None,
-      success_tokens:     0,
       next_store_path_id: 0,
       next_derivation_id: 0,
     }
@@ -432,7 +403,6 @@ impl State {
 
     self.store_path_infos.insert(id, StorePathInfo {
       name:      path.clone(),
-      states:    HashSet::new(),
       producer:  None,
       input_for: HashSet::new(),
     });
@@ -516,10 +486,10 @@ impl State {
     };
 
     // Extract metadata
-    if let Some(pname) = aterm::extract_pname(&parsed.env) {
-      if let Some(info) = self.get_derivation_info_mut(drv_id) {
-        info.pname = Some(pname);
-      }
+    if let Some(pname) = aterm::extract_pname(&parsed.env)
+      && let Some(info) = self.get_derivation_info_mut(drv_id)
+    {
+      info.pname = Some(pname);
     }
 
     if let Some(info) = self.get_derivation_info_mut(drv_id) {
@@ -543,21 +513,20 @@ impl State {
         // Mark dependencies as Planned if parent is Building and input is
         // Unknown This ensures we only count real dependencies that
         // will be built
-        if parent_is_building {
-          if let Some(input_info) = self.get_derivation_info(input_drv_id) {
-            if matches!(input_info.build_status, BuildStatus::Unknown) {
-              debug!(
-                "Marking input derivation {} as Planned (parent {} is \
-                 Building)",
-                input_drv_id, drv_id
-              );
-              self.update_build_status(input_drv_id, BuildStatus::Planned);
-            } else {
-              debug!(
-                "Input derivation {} current status: {:?}",
-                input_drv_id, input_info.build_status
-              );
-            }
+        if parent_is_building
+          && let Some(input_info) = self.get_derivation_info(input_drv_id)
+        {
+          if matches!(input_info.build_status, BuildStatus::Unknown) {
+            debug!(
+              "Marking input derivation {} as Planned (parent {} is Building)",
+              input_drv_id, drv_id
+            );
+            self.update_build_status(input_drv_id, BuildStatus::Planned);
+          } else {
+            debug!(
+              "Input derivation {} current status: {:?}",
+              input_drv_id, input_info.build_status
+            );
           }
         }
 
@@ -685,10 +654,9 @@ impl State {
   pub fn has_platform_mismatch(&self, id: DerivationId) -> bool {
     if let (Some(build_platform), Some(info)) =
       (&self.build_platform, self.get_derivation_info(id))
+      && let Some(drv_platform) = &info.platform
     {
-      if let Some(drv_platform) = &info.platform {
-        return build_platform != drv_platform;
-      }
+      return build_platform != drv_platform;
     }
     false
   }
@@ -796,11 +764,11 @@ impl State {
 /// '/nix/store/...-hello-2.10.drv'" Returns the Derivation object
 fn extract_derivation_from_text(text: &str) -> Option<Derivation> {
   // Look for .drv path in text
-  if let Some(start) = text.find("/nix/store/") {
-    if let Some(end) = text[start..].find(".drv") {
-      let drv_path = &text[start..start + end + 4]; // Include .drv
-      return Derivation::parse(drv_path);
-    }
+  if let Some(start) = text.find("/nix/store/")
+    && let Some(end) = text[start..].find(".drv")
+  {
+    let drv_path = &text[start..start + end + 4]; // Include .drv
+    return Derivation::parse(drv_path);
   }
   None
 }

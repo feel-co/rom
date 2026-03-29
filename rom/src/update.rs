@@ -142,35 +142,35 @@ fn handle_start(
     let child_drv_id = find_derivation_by_activity(state, id);
 
     if let Some(parent_drv_id) = parent_drv_id
-      && let Some(child_drv_id) = child_drv_id {
-        debug!(
-          "Establishing parent-child relationship: parent={parent_drv_id}, \
-           child={child_drv_id}"
-        );
+      && let Some(child_drv_id) = child_drv_id
+    {
+      debug!(
+        "Establishing parent-child relationship: parent={parent_drv_id}, \
+         child={child_drv_id}"
+      );
 
-        // Add child as a dependency of parent
-        if let Some(parent_info) = state.get_derivation_info_mut(parent_drv_id)
+      // Add child as a dependency of parent
+      if let Some(parent_info) = state.get_derivation_info_mut(parent_drv_id) {
+        let input = InputDerivation {
+          derivation: child_drv_id,
+          outputs:    std::collections::HashSet::new(),
+        };
+        if !parent_info
+          .input_derivations
+          .iter()
+          .any(|d| d.derivation == child_drv_id)
         {
-          let input = InputDerivation {
-            derivation: child_drv_id,
-            outputs:    std::collections::HashSet::new(),
-          };
-          if !parent_info
-            .input_derivations
-            .iter()
-            .any(|d| d.derivation == child_drv_id)
-          {
-            parent_info.input_derivations.push(input);
-            debug!("Added child to parent's input_derivations");
-          }
+          parent_info.input_derivations.push(input);
+          debug!("Added child to parent's input_derivations");
         }
-        // Mark child as having a parent
-        if let Some(child_info) = state.get_derivation_info_mut(child_drv_id) {
-          child_info.derivation_parents.insert(parent_drv_id);
-        }
-        // Remove child from forest roots since it has a parent
-        state.forest_roots.retain(|&id| id != child_drv_id);
       }
+      // Mark child as having a parent
+      if let Some(child_info) = state.get_derivation_info_mut(child_drv_id) {
+        child_info.derivation_parents.insert(parent_drv_id);
+      }
+      // Remove child from forest roots since it has a parent
+      state.forest_roots.retain(|&id| id != child_drv_id);
+    }
   }
 
   changed
@@ -229,31 +229,32 @@ fn handle_message(state: &mut State, level: Verbosity, msg: String) -> bool {
 
         // Try to extract which build failed
         if let Some(drv_path) = extract_derivation_from_error(&msg)
-          && let Some(drv) = Derivation::parse(&drv_path) {
-            let drv_id = state.get_or_create_derivation_id(drv);
+          && let Some(drv) = Derivation::parse(&drv_path)
+        {
+          let drv_id = state.get_or_create_derivation_id(drv);
 
-            // Get build info first
-            let build_info_opt =
-              state.get_derivation_info(drv_id).and_then(|info| {
-                if let BuildStatus::Building(build_info) = &info.build_status {
-                  Some(build_info.clone())
-                } else {
-                  None
-                }
-              });
+          // Get build info first
+          let build_info_opt =
+            state.get_derivation_info(drv_id).and_then(|info| {
+              if let BuildStatus::Building(build_info) = &info.build_status {
+                Some(build_info.clone())
+              } else {
+                None
+              }
+            });
 
-            if let Some(build_info) = build_info_opt {
-              let fail = BuildFail {
-                at:        current_time(),
-                fail_type: parse_fail_type(&msg),
-              };
+          if let Some(build_info) = build_info_opt {
+            let fail = BuildFail {
+              at:        current_time(),
+              fail_type: parse_fail_type(&msg),
+            };
 
-              state.update_build_status(drv_id, BuildStatus::Failed {
-                info: build_info,
-                fail,
-              });
-            }
+            state.update_build_status(drv_id, BuildStatus::Failed {
+              info: build_info,
+              fail,
+            });
           }
+        }
         return true;
       }
       false
@@ -326,10 +327,11 @@ fn handle_result(
     },
     ResultType::SetPhase => {
       if let Some(phase) = fields.first().and_then(|f| f.as_str())
-        && let Some(activity) = state.activities.get_mut(&id) {
-          activity.phase = Some(phase.to_string());
-          return true;
-        }
+        && let Some(activity) = state.activities.get_mut(&id)
+      {
+        activity.phase = Some(phase.to_string());
+        return true;
+      }
       false
     },
     ResultType::Progress => {
@@ -340,15 +342,16 @@ fn handle_result(
           fields[2].as_u64(),
           fields[3].as_u64(),
         )
-          && let Some(activity) = state.activities.get_mut(&id) {
-            activity.progress = Some(ActivityProgress {
-              done,
-              expected,
-              running,
-              failed,
-            });
-            return true;
-          }
+        && let Some(activity) = state.activities.get_mut(&id)
+      {
+        activity.progress = Some(ActivityProgress {
+          done,
+          expected,
+          running,
+          failed,
+        });
+        return true;
+      }
       false
     },
     ResultType::SetExpected => {
@@ -543,26 +546,26 @@ fn handle_substitute_start(
   };
 
   if let Some(path_str) = path_str
-    && let Some(path) = StorePath::parse(&path_str) {
-      let path_id = state.get_or_create_store_path_id(path);
-      let host =
-        parse_host(fields.get(1).and_then(|v| v.as_str()).unwrap_or(""));
+    && let Some(path) = StorePath::parse(&path_str)
+  {
+    let path_id = state.get_or_create_store_path_id(path);
+    let host = parse_host(fields.get(1).and_then(|v| v.as_str()).unwrap_or(""));
 
-      let transfer = TransferInfo {
-        start: now,
-        host,
-        activity_id: id,
-        bytes_transferred: 0,
-        total_bytes: None,
-      };
+    let transfer = TransferInfo {
+      start: now,
+      host,
+      activity_id: id,
+      bytes_transferred: 0,
+      total_bytes: None,
+    };
 
-      state
-        .full_summary
-        .running_downloads
-        .insert(path_id, transfer);
+    state
+      .full_summary
+      .running_downloads
+      .insert(path_id, transfer);
 
-      return true;
-    }
+    return true;
+  }
   false
 }
 
@@ -642,21 +645,22 @@ fn handle_copy_path_start(
   });
 
   if let (Some(path_str), Some(to)) = (path_str, to_host)
-    && let Some(path) = StorePath::parse(path_str) {
-      let path_id = state.get_or_create_store_path_id(path);
+    && let Some(path) = StorePath::parse(path_str)
+  {
+    let path_id = state.get_or_create_store_path_id(path);
 
-      let transfer = TransferInfo {
-        start:             now,
-        host:              to, // destination host
-        activity_id:       id,
-        bytes_transferred: 0,
-        total_bytes:       None,
-      };
+    let transfer = TransferInfo {
+      start:             now,
+      host:              to, // destination host
+      activity_id:       id,
+      bytes_transferred: 0,
+      total_bytes:       None,
+    };
 
-      // CopyPath is an upload from 'from' to 'to'
-      state.full_summary.running_uploads.insert(path_id, transfer);
-      return true;
-    }
+    // CopyPath is an upload from 'from' to 'to'
+    state.full_summary.running_uploads.insert(path_id, transfer);
+    return true;
+  }
 
   false
 }
@@ -693,10 +697,11 @@ fn handle_post_build_hook_start(
 
   let drv_path = fields[0].as_str();
   if let Some(drv_path) = drv_path
-    && let Some(_drv) = Derivation::parse(drv_path) {
-      // Just track that the hook is running
-      return true;
-    }
+    && let Some(_drv) = Derivation::parse(drv_path)
+  {
+    // Just track that the hook is running
+    return true;
+  }
 
   false
 }
@@ -749,9 +754,10 @@ fn handle_transfer_stop(state: &mut State, id: Id, now: f64) -> bool {
 fn extract_derivation_path(text: &str) -> Option<String> {
   // Look for .drv paths in the text
   if let Some(start) = text.find("/nix/store/")
-    && let Some(end) = text[start..].find(".drv") {
-      return Some(text[start..start + end + 4].to_string());
-    }
+    && let Some(end) = text[start..].find(".drv")
+  {
+    return Some(text[start..start + end + 4].to_string());
+  }
   None
 }
 
@@ -793,9 +799,10 @@ fn extract_derivation_from_error(msg: &str) -> Option<String> {
 fn extract_file_name(msg: &str) -> Option<String> {
   // Try to extract file name from evaluation messages
   if let Some(start) = msg.find('\'')
-    && let Some(end) = msg[start + 1..].find('\'') {
-      return Some(msg[start + 1..start + 1 + end].to_string());
-    }
+    && let Some(end) = msg[start + 1..].find('\'')
+  {
+    return Some(msg[start + 1..start + 1 + end].to_string());
+  }
   None
 }
 

@@ -145,115 +145,110 @@ impl<W: Write> Monitor<W> {
     }
 
     // Try to detect build-related messages
-    if line.starts_with("building") || line.contains("building '") {
-      if let Some(drv_path) = extract_path_from_message(line) {
-        if let Some(drv) = crate::state::Derivation::parse(&drv_path) {
-          let drv_id = self.state.get_or_create_derivation_id(drv);
-          let now = crate::state::current_time();
+    if (line.starts_with("building") || line.contains("building '"))
+      && let Some(drv_path) = extract_path_from_message(line)
+      && let Some(drv) = crate::state::Derivation::parse(&drv_path)
+    {
+      let drv_id = self.state.get_or_create_derivation_id(drv);
+      let now = crate::state::current_time();
 
-          let build_info = crate::state::BuildInfo {
-            start:       now,
-            host:        Host::Localhost,
-            estimate:    None,
-            activity_id: None,
-          };
+      let build_info = crate::state::BuildInfo {
+        start:       now,
+        host:        Host::Localhost,
+        estimate:    None,
+        activity_id: None,
+      };
 
-          self.state.update_build_status(
-            drv_id,
-            crate::state::BuildStatus::Building(build_info),
-          );
-          return Ok(true);
-        }
-      }
+      self.state.update_build_status(
+        drv_id,
+        crate::state::BuildStatus::Building(build_info),
+      );
+      return Ok(true);
     }
 
     // Detect downloads
-    if line.starts_with("downloading") || line.contains("downloading '") {
-      if let Some(path_str) = extract_path_from_message(line) {
-        if let Some(path) = crate::state::StorePath::parse(&path_str) {
-          let path_id = self.state.get_or_create_store_path_id(path);
-          let now = crate::state::current_time();
+    if (line.starts_with("downloading") || line.contains("downloading '"))
+      && let Some(path_str) = extract_path_from_message(line)
+      && let Some(path) = crate::state::StorePath::parse(&path_str)
+    {
+      let path_id = self.state.get_or_create_store_path_id(path);
+      let now = crate::state::current_time();
 
-          // Try to extract byte size from the message
-          let total_bytes = extract_byte_size(line);
+      // Try to extract byte size from the message
+      let total_bytes = extract_byte_size(line);
 
-          let transfer = crate::state::TransferInfo {
-            start: now,
-            host: Host::Localhost,
-            activity_id: 0, // no activity ID in human mode
-            bytes_transferred: 0,
-            total_bytes,
-          };
+      let transfer = crate::state::TransferInfo {
+        start: now,
+        host: Host::Localhost,
+        activity_id: 0, // no activity ID in human mode
+        bytes_transferred: 0,
+        total_bytes,
+      };
 
-          self
-            .state
-            .full_summary
-            .running_downloads
-            .insert(path_id, transfer);
+      self
+        .state
+        .full_summary
+        .running_downloads
+        .insert(path_id, transfer);
 
-          return Ok(true);
-        }
-      }
+      return Ok(true);
     }
 
     // Detect download completions with byte sizes
-    if line.starts_with("downloaded") || line.contains("downloaded '") {
-      if let Some(path_str) = extract_path_from_message(line) {
-        if let Some(path) = StorePath::parse(&path_str) {
-          if let Some(&path_id) = self.state.store_path_ids.get(&path) {
-            let now = crate::state::current_time();
-            let total_bytes = extract_byte_size(line).unwrap_or(0);
+    if (line.starts_with("downloaded") || line.contains("downloaded '"))
+      && let Some(path_str) = extract_path_from_message(line)
+      && let Some(path) = StorePath::parse(&path_str)
+      && let Some(&path_id) = self.state.store_path_ids.get(&path)
+    {
+      let now = crate::state::current_time();
+      let total_bytes = extract_byte_size(line).unwrap_or(0);
 
-            // Get start time from running download if it exists
-            let start = self
-              .state
-              .full_summary
-              .running_downloads
-              .get(&path_id)
-              .map_or(now, |t| t.start);
+      // Get start time from running download if it exists
+      let start = self
+        .state
+        .full_summary
+        .running_downloads
+        .get(&path_id)
+        .map_or(now, |t| t.start);
 
-            let completed = crate::state::CompletedTransferInfo {
-              start,
-              end: now,
-              host: Host::Localhost,
-              total_bytes,
-            };
+      let completed = crate::state::CompletedTransferInfo {
+        start,
+        end: now,
+        host: Host::Localhost,
+        total_bytes,
+      };
 
-            self.state.full_summary.running_downloads.remove(&path_id);
-            self
-              .state
-              .full_summary
-              .completed_downloads
-              .insert(path_id, completed);
+      self.state.full_summary.running_downloads.remove(&path_id);
+      self
+        .state
+        .full_summary
+        .completed_downloads
+        .insert(path_id, completed);
 
-            return Ok(true);
-          }
-        }
-      }
+      return Ok(true);
     }
 
     // Detect "checking outputs of" messages
-    if line.contains("checking outputs of") {
-      if let Some(drv_path) = extract_path_from_message(line) {
-        if let Some(drv) = crate::state::Derivation::parse(&drv_path) {
-          let drv_id = self.state.get_or_create_derivation_id(drv);
-          // Just mark it as "touched" - checking happens after build
-          // Reminds me of Sako...
-          self.state.touched_ids.insert(drv_id);
-          return Ok(true);
-        }
-      }
+    if line.contains("checking outputs of")
+      && let Some(drv_path) = extract_path_from_message(line)
+      && let Some(drv) = crate::state::Derivation::parse(&drv_path)
+    {
+      let drv_id = self.state.get_or_create_derivation_id(drv);
+      // Just mark it as "touched" - checking happens after build
+      // Reminds me of Sako...
+      self.state.touched_ids.insert(drv_id);
+      return Ok(true);
     }
 
     // Detect "copying N paths" messages
     if line.starts_with("copying") && line.contains("paths") {
       // Extract number of paths if present
       let words: Vec<&str> = line.split_whitespace().collect();
-      if words.len() >= 2 {
-        if let Ok(count) = words[1].parse::<usize>() {
-          debug!("Copying {} paths", count);
-          return Ok(true);
-        }
+      if words.len() >= 2
+        && let Ok(count) = words[1].parse::<usize>()
+      {
+        debug!("Copying {} paths", count);
+        return Ok(true);
       }
     }
 
@@ -296,51 +291,40 @@ impl<W: Write> Monitor<W> {
       };
 
       // Try to find the associated derivation and mark it as failed
-      if let Some(drv_path) = extract_path_from_message(line) {
-        if let Some(drv) = crate::state::Derivation::parse(&drv_path) {
-          if let Some(&drv_id) = self.state.derivation_ids.get(&drv) {
-            if let Some(info) = self.state.get_derivation_info(drv_id) {
-              if let crate::state::BuildStatus::Building(build_info) =
-                &info.build_status
-              {
-                let now = crate::state::current_time();
-                self.state.update_build_status(
-                  drv_id,
-                  crate::state::BuildStatus::Failed {
-                    info: build_info.clone(),
-                    fail: crate::state::BuildFail {
-                      at:        now,
-                      fail_type: fail_type.clone(),
-                    },
-                  },
-                );
-              }
-            }
-          }
-        }
+      if let Some(drv_path) = extract_path_from_message(line)
+        && let Some(drv) = crate::state::Derivation::parse(&drv_path)
+        && let Some(&drv_id) = self.state.derivation_ids.get(&drv)
+        && let Some(info) = self.state.get_derivation_info(drv_id)
+        && let crate::state::BuildStatus::Building(build_info) =
+          &info.build_status
+      {
+        let now = crate::state::current_time();
+        self.state.update_build_status(
+          drv_id,
+          crate::state::BuildStatus::Failed {
+            info: build_info.clone(),
+            fail: crate::state::BuildFail { at: now, fail_type },
+          },
+        );
       }
 
       return Ok(true);
     }
 
     // Detect build completions
-    if line.starts_with("built") || line.contains("built '") {
-      if let Some(drv_path) = extract_path_from_message(line) {
-        if let Some(drv) = Derivation::parse(&drv_path) {
-          if let Some(&drv_id) = self.state.derivation_ids.get(&drv) {
-            if let Some(info) = self.state.get_derivation_info(drv_id) {
-              if let BuildStatus::Building(build_info) = &info.build_status {
-                let now = crate::state::current_time();
-                self.state.update_build_status(drv_id, BuildStatus::Built {
-                  info: build_info.clone(),
-                  end:  now,
-                });
-                return Ok(true);
-              }
-            }
-          }
-        }
-      }
+    if (line.starts_with("built") || line.contains("built '"))
+      && let Some(drv_path) = extract_path_from_message(line)
+      && let Some(drv) = Derivation::parse(&drv_path)
+      && let Some(&drv_id) = self.state.derivation_ids.get(&drv)
+      && let Some(info) = self.state.get_derivation_info(drv_id)
+      && let BuildStatus::Building(build_info) = &info.build_status
+    {
+      let now = crate::state::current_time();
+      self.state.update_build_status(drv_id, BuildStatus::Built {
+        info: build_info.clone(),
+        end:  now,
+      });
+      return Ok(true);
     }
 
     Ok(false)
@@ -360,10 +344,10 @@ impl<W: Write> Monitor<W> {
 /// Extract a path from a message line
 fn extract_path_from_message(line: &str) -> Option<String> {
   // Look for quoted paths
-  if let Some(start) = line.find('\'') {
-    if let Some(end) = line[start + 1..].find('\'') {
-      return Some(line[start + 1..start + 1 + end].to_string());
-    }
+  if let Some(start) = line.find('\'')
+    && let Some(end) = line[start + 1..].find('\'')
+  {
+    return Some(line[start + 1..start + 1 + end].to_string());
   }
 
   // Look for unquoted store paths
@@ -390,19 +374,19 @@ fn extract_byte_size(line: &str) -> Option<u64> {
   for (i, word) in words.iter().enumerate() {
     if i + 1 < words.len() {
       let unit = words[i + 1];
-      if matches!(unit, "B" | "KiB" | "MiB" | "GiB" | "TiB" | "PiB") {
-        if let Ok(value) = word.parse::<f64>() {
-          let multiplier = match unit {
-            "B" => 1_u64,
-            "KiB" => 1024,
-            "MiB" => 1024 * 1024,
-            "GiB" => 1024 * 1024 * 1024,
-            "TiB" => 1024_u64 * 1024 * 1024 * 1024,
-            "PiB" => 1024_u64 * 1024 * 1024 * 1024 * 1024,
-            _ => 1,
-          };
-          return Some((value * multiplier as f64) as u64);
-        }
+      if matches!(unit, "B" | "KiB" | "MiB" | "GiB" | "TiB" | "PiB")
+        && let Ok(value) = word.parse::<f64>()
+      {
+        let multiplier = match unit {
+          "B" => 1_u64,
+          "KiB" => 1024,
+          "MiB" => 1024 * 1024,
+          "GiB" => 1024 * 1024 * 1024,
+          "TiB" => 1024_u64 * 1024 * 1024 * 1024,
+          "PiB" => 1024_u64 * 1024 * 1024 * 1024 * 1024,
+          _ => 1,
+        };
+        return Some((value * multiplier as f64) as u64);
       }
     }
   }

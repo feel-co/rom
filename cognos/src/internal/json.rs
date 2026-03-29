@@ -119,7 +119,7 @@ pub enum Actions {
 /// Parse a single line of `--log-format internal-json` output.
 /// Lines are prefixed with `@nix ` followed by a JSON object.
 /// Returns `None` for lines that are not internal-json messages.
-#[must_use] 
+#[must_use]
 pub fn parse_line(line: &str) -> Option<Actions> {
   let json = line.strip_prefix("@nix ")?;
   serde_json::from_str(json).ok()

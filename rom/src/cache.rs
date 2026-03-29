@@ -31,7 +31,7 @@ struct BuildReportRow {
 impl BuildReportCache {
   /// Create a new cache instance with the given path
   #[must_use]
-  pub fn new(cache_path: PathBuf) -> Self {
+  pub const fn new(cache_path: PathBuf) -> Self {
     Self { cache_path }
   }
 
@@ -59,6 +59,7 @@ impl BuildReportCache {
   /// Load build reports from CSV
   ///
   /// Returns empty [`HashMap`] if file doesn't exist or parsing fails
+  #[must_use]
   pub fn load(&self) -> HashMap<(String, String), Vec<BuildReport>> {
     if !self.cache_path.exists() {
       return HashMap::new();
@@ -195,7 +196,7 @@ impl BuildReportCache {
     } else {
       let mid1 = durations[len / 2 - 1];
       let mid2 = durations[len / 2];
-      Some((mid1 + mid2) / 2)
+      Some(u64::midpoint(mid1, mid2))
     }
   }
 
@@ -266,7 +267,7 @@ const fn days_until_month(month: u64) -> i64 {
 }
 
 // FIXME: does Chrono do this?
-/// Format SystemTime as UTC string in format "%Y-%m-%d %H:%M:%S"
+/// Format `SystemTime` as UTC string in format "%Y-%m-%d %H:%M:%S"
 fn format_utc_time(time: SystemTime) -> String {
   let duration = time
     .duration_since(SystemTime::UNIX_EPOCH)

@@ -16,7 +16,8 @@ fn run_rom(args: &[&str]) -> (String, String, i32) {
 fn test_parse_args_with_separator_passthrough() {
   // This test verifies the splitting logic for passthrough args
   let args = ["--", "--rebuild", "--refresh"];
-  let args: Vec<String> = args.iter().map(std::string::ToString::to_string).collect();
+  let args: Vec<String> =
+    args.iter().map(std::string::ToString::to_string).collect();
   let (package_and_rom_args, nix_flags) =
     rom::cli::parse_args_with_separator(&args);
   assert!(

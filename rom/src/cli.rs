@@ -544,20 +544,21 @@ fn run_monitored_command(
               // BuildLogLine (101) carries a single log line from the builder
               if matches!(result_type, cognos::ResultType::BuildLogLine)
                 && !fields.is_empty()
-                && let Some(log_text) = fields[0].as_str() {
-                  let use_color = !silent;
-                  let prefix = state
-                    .get_activity_prefix(*id, &log_prefix_style, use_color)
-                    .unwrap_or_default();
-                  let prefixed_log = format!("{prefix}{log_text}");
-                  let mut logs = log_buffer_clone.lock().unwrap();
-                  logs.push_back(prefixed_log);
-                  if let Some(limit) = log_line_limit {
-                    while logs.len() > limit {
-                      logs.pop_front();
-                    }
+                && let Some(log_text) = fields[0].as_str()
+              {
+                let use_color = !silent;
+                let prefix = state
+                  .get_activity_prefix(*id, &log_prefix_style, use_color)
+                  .unwrap_or_default();
+                let prefixed_log = format!("{prefix}{log_text}");
+                let mut logs = log_buffer_clone.lock().unwrap();
+                logs.push_back(prefixed_log);
+                if let Some(limit) = log_line_limit {
+                  while logs.len() > limit {
+                    logs.pop_front();
                   }
                 }
+              }
             },
             _ => {},
           }
