@@ -1,6 +1,13 @@
 //! State update logic for processing nix messages
-
-use cognos::{Actions, Activities, Host, Id, ProgressState, Verbosity};
+use cognos::{
+  Actions,
+  Activities,
+  Host,
+  Id,
+  ProgressState,
+  ResultType,
+  Verbosity,
+};
 use tracing::{debug, trace};
 
 use crate::{
@@ -12,17 +19,14 @@ use crate::{
     BuildInfo,
     BuildReport,
     BuildStatus,
-    CompletedBuildInfo,
     CompletedTransferInfo,
     Derivation,
     DerivationId,
     FailType,
-    FailedBuildInfo,
     InputDerivation,
     State,
     StorePath,
     StorePathId,
-    StorePathState,
     TransferInfo,
     current_time,
   },
@@ -56,15 +60,23 @@ pub fn process_message(state: &mut State, action: Actions) -> bool {
     Actions::Stop { id } => {
       changed |= handle_stop(state, id, now);
     },
-    Actions::Message { level, msg } => {
-      changed |= handle_message(state, level, msg);
+    Actions::Message {
+      level,
+      msg,
+      raw_msg,
+      ..
+    } => {
+      // Prefer raw_msg (Lix). It's the message without ANSI escape codes.
+      // Fall back to msg for Nix, which doesn't provide raw_msg.
+      let clean = raw_msg.unwrap_or(msg);
+      changed |= handle_message(state, level, clean);
     },
     Actions::Result {
       id,
-      activity,
+      result_type,
       fields,
     } => {
-      changed |= handle_result(state, id, activity as u8, fields, now);
+      changed |= handle_result(state, id, result_type, fields, now);
     },
   }
 
@@ -129,8 +141,8 @@ fn handle_start(
     let parent_drv_id = find_derivation_by_activity(state, parent_act_id);
     let child_drv_id = find_derivation_by_activity(state, id);
 
-    if let Some(parent_drv_id) = parent_drv_id {
-      if let Some(child_drv_id) = child_drv_id {
+    if let Some(parent_drv_id) = parent_drv_id
+      && let Some(child_drv_id) = child_drv_id {
         debug!(
           "Establishing parent-child relationship: parent={parent_drv_id}, \
            child={child_drv_id}"
@@ -159,7 +171,6 @@ fn handle_start(
         // Remove child from forest roots since it has a parent
         state.forest_roots.retain(|&id| id != child_drv_id);
       }
-    }
   }
 
   changed
@@ -217,8 +228,8 @@ fn handle_message(state: &mut State, level: Verbosity, msg: String) -> bool {
         state.nix_errors.push(msg.clone());
 
         // Try to extract which build failed
-        if let Some(drv_path) = extract_derivation_from_error(&msg) {
-          if let Some(drv) = Derivation::parse(&drv_path) {
+        if let Some(drv_path) = extract_derivation_from_error(&msg)
+          && let Some(drv) = Derivation::parse(&drv_path) {
             let drv_id = state.get_or_create_derivation_id(drv);
 
             // Get build info first
@@ -243,7 +254,6 @@ fn handle_message(state: &mut State, level: Verbosity, msg: String) -> bool {
               });
             }
           }
-        }
         return true;
       }
       false
@@ -265,7 +275,7 @@ fn handle_message(state: &mut State, level: Verbosity, msg: String) -> bool {
     | Verbosity::Debug
     | Verbosity::Vomit => {
       // These are trace-level messages, store separately
-      state.traces.push(msg.clone());
+      state.traces.push(msg);
       true
     },
     _ => {
@@ -277,92 +287,60 @@ fn handle_message(state: &mut State, level: Verbosity, msg: String) -> bool {
 fn handle_result(
   state: &mut State,
   id: Id,
-  result_type: u8,
+  result_type: ResultType,
   fields: Vec<serde_json::Value>,
   _now: f64,
 ) -> bool {
-  // Result message types are DIFFERENT from Activity types
-  // Type 100: FileLinked (2 ints)
-  // Type 101: BuildLogLine (1 text)
-  // Type 102: UntrustedPath (1 text - store path)
-  // Type 103: CorruptedPath (1 text - store path)
-  // Type 104: SetPhase (1 text)
-  // Type 105: Progress (4 ints: done, expected, running, failed)
-  // Type 106: SetExpected (2 ints: activity type, count)
-  // Type 107: PostBuildLogLine (1 text)
-  // Type 108: FetchStatus (1 text)
-
   match result_type {
-    100 => {
-      // FileLinked: 2 int fields (linked count, total count)
+    ResultType::FileLinked => {
       if fields.len() >= 2 {
-        let linked = fields[0].as_u64().unwrap_or(0);
-        let total = fields[1].as_u64().unwrap_or(0);
-        debug!("FileLinked: {}/{}", linked, total);
-        // File linking is reported but doesn't need state tracking
+        debug!(
+          "FileLinked: {}/{}",
+          fields[0].as_u64().unwrap_or(0),
+          fields[1].as_u64().unwrap_or(0)
+        );
       }
       false
     },
-    101 => {
-      // BuildLogLine: 1 text field
+    ResultType::BuildLogLine => {
       if let Some(line) = fields.first().and_then(|f| f.as_str()) {
         state.build_logs.push(line.to_string());
         return true;
       }
       false
     },
-    102 => {
-      // UntrustedPath: 1 text field (store path)
-      if let Some(path_str) = fields.first().and_then(|f| f.as_str()) {
-        debug!("Untrusted path reported: {}", path_str);
-        state
-          .nix_errors
-          .push(format!("Untrusted path: {}", path_str));
+    ResultType::UntrustedPath => {
+      if let Some(path) = fields.first().and_then(|f| f.as_str()) {
+        debug!("Untrusted path: {}", path);
+        state.nix_errors.push(format!("Untrusted path: {path}"));
         return true;
       }
       false
     },
-    103 => {
-      // CorruptedPath: 1 text field (store path)
-      if let Some(path_str) = fields.first().and_then(|f| f.as_str()) {
-        state.nix_errors.push(format!("Corrupted path: {path_str}"));
+    ResultType::CorruptedPath => {
+      if let Some(path) = fields.first().and_then(|f| f.as_str()) {
+        state.nix_errors.push(format!("Corrupted path: {path}"));
         return true;
       }
       false
     },
-    104 => {
-      // SetPhase: 1 text field
-      if let Some(phase_str) = fields.first().and_then(|f| f.as_str()) {
-        if let Some(activity) = state.activities.get_mut(&id) {
-          activity.phase = Some(phase_str.to_string());
+    ResultType::SetPhase => {
+      if let Some(phase) = fields.first().and_then(|f| f.as_str())
+        && let Some(activity) = state.activities.get_mut(&id) {
+          activity.phase = Some(phase.to_string());
           return true;
         }
-      }
       false
     },
-    105 => {
-      // Progress: 4 int fields (done, expected, running, failed)
-      if fields.len() >= 4 {
-        if let (Some(done), Some(expected), Some(running), Some(failed)) = (
+    ResultType::Progress => {
+      if fields.len() >= 4
+        && let (Some(done), Some(expected), Some(running), Some(failed)) = (
           fields[0].as_u64(),
           fields[1].as_u64(),
           fields[2].as_u64(),
           fields[3].as_u64(),
-        ) {
-          // If this progress is for the Builds activity, track success tokens
-          if state.builds_activity == Some(id) {
-            if let Some(activity) = state.activities.get(&id) {
-              if let Some(prev_progress) = &activity.progress {
-                let new_done = done.saturating_sub(prev_progress.done);
-                if new_done > 0 {
-                  state.success_tokens =
-                    state.success_tokens.saturating_add(new_done);
-                }
-              }
-            }
-          }
-
-          if let Some(activity) = state.activities.get_mut(&id) {
+        )
+          && let Some(activity) = state.activities.get_mut(&id) {
             activity.progress = Some(ActivityProgress {
               done,
               expected,
@@ -371,41 +349,29 @@ fn handle_result(
             });
             return true;
           }
-        }
-      }
       false
     },
-    106 => {
-      // SetExpected: 2 int fields (activity type, count)
+    ResultType::SetExpected => {
       if fields.len() >= 2 {
-        let activity_type = fields[0].as_u64().unwrap_or(0);
-        let expected_count = fields[1].as_u64().unwrap_or(0);
         debug!(
           "SetExpected: activity_type={}, count={}",
-          activity_type, expected_count
+          fields[0].as_u64().unwrap_or(0),
+          fields[1].as_u64().unwrap_or(0)
         );
-        // Expected counts are informational and don't affect state tracking
       }
       false
     },
-    107 => {
-      // PostBuildLogLine: 1 text field
+    ResultType::PostBuildLogLine => {
       if let Some(line) = fields.first().and_then(|f| f.as_str()) {
         state.build_logs.push(format!("[post-build] {line}"));
         return true;
       }
       false
     },
-    108 => {
-      // FetchStatus: 1 text field
+    ResultType::FetchStatus => {
       if let Some(status) = fields.first().and_then(|f| f.as_str()) {
-        debug!("Fetch status: {}", status);
-        // Fetch status is informational
+        debug!("Fetch status: {status}");
       }
-      false
-    },
-    _ => {
-      debug!("Unknown result type: {}", result_type);
       false
     },
   }
@@ -479,7 +445,8 @@ fn handle_build_start(
     debug!("Extracted derivation path: {}", drv_path);
     if let Some(drv) = Derivation::parse(&drv_path) {
       let drv_id = state.get_or_create_derivation_id(drv.clone());
-      let host = extract_host(text);
+      let host =
+        parse_host(fields.get(1).and_then(|v| v.as_str()).unwrap_or(""));
 
       // Get build time estimate from cache
       let estimate = get_build_estimate(state, &drv.name, &host);
@@ -524,41 +491,40 @@ fn handle_build_start(
 }
 
 fn handle_build_stop(state: &mut State, id: Id, now: f64) -> bool {
-  // Check if we have success tokens to consume
-  if state.success_tokens > 0 {
-    // Find the derivation associated with this activity
-    for (drv_id, info) in state.derivation_infos.clone().iter() {
-      if let BuildStatus::Building(build_info) = &info.build_status {
-        if build_info.activity_id == Some(id) {
-          // Consume a success token and mark build as complete
-          state.success_tokens = state.success_tokens.saturating_sub(1);
-          state.update_build_status(*drv_id, BuildStatus::Built {
-            info: build_info.clone(),
-            end:  now,
-          });
-
-          // Record build completion for future predictions
-          record_build_completion(
-            state,
-            info.name.name.clone(),
-            info.platform.clone(),
-            build_info.start,
-            now,
-            &build_info.host,
-          );
-
-          debug!(
-            "Build completed for derivation {} (success_tokens: {})",
-            drv_id, state.success_tokens
-          );
-          return true;
-        }
+  // Find the derivation associated with this Build activity. Per NOM's design,
+  // Stop for a Build activity means the build completed.
+  let result = state.derivation_infos.iter().find_map(|(drv_id, info)| {
+    if let BuildStatus::Building(build_info) = &info.build_status {
+      if build_info.activity_id == Some(id) {
+        Some((
+          *drv_id,
+          build_info.clone(),
+          info.name.name.clone(),
+          info.platform.clone(),
+        ))
+      } else {
+        None
       }
+    } else {
+      None
     }
+  });
+
+  if let Some((drv_id, build_info, name, platform)) = result {
+    let start = build_info.start;
+    let host = build_info.host.clone();
+    state.update_build_status(drv_id, BuildStatus::Built {
+      info: build_info,
+      end:  now,
+    });
+    record_build_completion(state, name, platform, start, now, &host);
+    debug!("Build completed for derivation {drv_id}");
+    return true;
   }
 
-  // No success tokens - build was stopped without completion signal
-  debug!("Build stopped for activity {} without success token", id);
+  debug!(
+    "Build stopped for activity {id} but no matching building derivation found"
+  );
   false
 }
 
@@ -576,10 +542,11 @@ fn handle_substitute_start(
     fields[0].as_str().map(std::string::ToString::to_string)
   };
 
-  if let Some(path_str) = path_str {
-    if let Some(path) = StorePath::parse(&path_str) {
+  if let Some(path_str) = path_str
+    && let Some(path) = StorePath::parse(&path_str) {
       let path_id = state.get_or_create_store_path_id(path);
-      let host = extract_host(text);
+      let host =
+        parse_host(fields.get(1).and_then(|v| v.as_str()).unwrap_or(""));
 
       let transfer = TransferInfo {
         start: now,
@@ -589,12 +556,6 @@ fn handle_substitute_start(
         total_bytes: None,
       };
 
-      if let Some(path_info) = state.get_store_path_info_mut(path_id) {
-        path_info
-          .states
-          .insert(StorePathState::Downloading(transfer.clone()));
-      }
-
       state
         .full_summary
         .running_downloads
@@ -602,46 +563,35 @@ fn handle_substitute_start(
 
       return true;
     }
-  }
   false
 }
 
 fn handle_substitute_stop(state: &mut State, id: Id, now: f64) -> bool {
   // Find the store path associated with this activity
-  for (path_id, transfer_info) in &state.full_summary.running_downloads.clone()
-  {
-    if transfer_info.activity_id == id {
-      state.full_summary.running_downloads.remove(path_id);
+  let result = state.full_summary.running_downloads.iter().find_map(
+    |(path_id, transfer_info)| {
+      if transfer_info.activity_id == id {
+        Some((*path_id, transfer_info.clone()))
+      } else {
+        None
+      }
+    },
+  );
 
-      let completed = CompletedTransferInfo {
+  if let Some((path_id, transfer_info)) = result {
+    state.full_summary.running_downloads.remove(&path_id);
+    state.full_summary.completed_downloads.insert(
+      path_id,
+      CompletedTransferInfo {
         start:       transfer_info.start,
         end:         now,
-        host:        transfer_info.host.clone(),
+        host:        transfer_info.host,
         total_bytes: transfer_info.bytes_transferred,
-      };
-
-      state
-        .full_summary
-        .completed_downloads
-        .insert(*path_id, completed);
-
-      if let Some(path_info) = state.get_store_path_info_mut(*path_id) {
-        path_info
-          .states
-          .remove(&StorePathState::Downloading(transfer_info.clone()));
-        path_info.states.insert(StorePathState::Downloaded(
-          CompletedTransferInfo {
-            start:       transfer_info.start,
-            end:         now,
-            host:        transfer_info.host.clone(),
-            total_bytes: transfer_info.bytes_transferred,
-          },
-        ));
-      }
-
-      return true;
-    }
+      },
+    );
+    return true;
   }
+
   false
 }
 
@@ -691,8 +641,8 @@ fn handle_copy_path_start(
     }
   });
 
-  if let (Some(path_str), Some(to)) = (path_str, to_host) {
-    if let Some(path) = StorePath::parse(path_str) {
+  if let (Some(path_str), Some(to)) = (path_str, to_host)
+    && let Some(path) = StorePath::parse(path_str) {
       let path_id = state.get_or_create_store_path_id(path);
 
       let transfer = TransferInfo {
@@ -707,7 +657,6 @@ fn handle_copy_path_start(
       state.full_summary.running_uploads.insert(path_id, transfer);
       return true;
     }
-  }
 
   false
 }
@@ -743,12 +692,11 @@ fn handle_post_build_hook_start(
   }
 
   let drv_path = fields[0].as_str();
-  if let Some(drv_path) = drv_path {
-    if let Some(_drv) = Derivation::parse(drv_path) {
+  if let Some(drv_path) = drv_path
+    && let Some(_drv) = Derivation::parse(drv_path) {
       // Just track that the hook is running
       return true;
     }
-  }
 
   false
 }
@@ -800,11 +748,10 @@ fn handle_transfer_stop(state: &mut State, id: Id, now: f64) -> bool {
 
 fn extract_derivation_path(text: &str) -> Option<String> {
   // Look for .drv paths in the text
-  if let Some(start) = text.find("/nix/store/") {
-    if let Some(end) = text[start..].find(".drv") {
+  if let Some(start) = text.find("/nix/store/")
+    && let Some(end) = text[start..].find(".drv") {
       return Some(text[start..start + end + 4].to_string());
     }
-  }
   None
 }
 
@@ -821,21 +768,22 @@ fn extract_store_path(text: &str) -> Option<String> {
   None
 }
 
-fn extract_host(text: &str) -> Host {
-  if text.contains("on ") {
-    // Format: "building X on hostname"
-    if let Some(pos) = text.rfind("on ") {
-      let rest = &text[pos + 3..];
-      let hostname = rest
-        .split_whitespace()
-        .next()
-        .unwrap_or("localhost")
-        .trim_matches(|c| c == '\'' || c == '"')
-        .to_string();
-      return Host::Remote(hostname);
-    }
+/// Parse a host from the fields[1] string of a Build or Substitute activity.
+/// Strips ssh:// and https:// URI prefixes; empty or "localhost" -> Localhost.
+fn parse_host(s: &str) -> Host {
+  let name = s
+    .trim()
+    .strip_prefix("ssh://")
+    .or_else(|| s.strip_prefix("https://"))
+    .or_else(|| s.strip_prefix("http://"))
+    .unwrap_or(s)
+    .trim_end_matches('/');
+
+  if name.is_empty() || name == "localhost" {
+    Host::Localhost
+  } else {
+    Host::Remote(name.to_string())
   }
-  Host::Localhost
 }
 
 fn extract_derivation_from_error(msg: &str) -> Option<String> {
@@ -844,11 +792,10 @@ fn extract_derivation_from_error(msg: &str) -> Option<String> {
 
 fn extract_file_name(msg: &str) -> Option<String> {
   // Try to extract file name from evaluation messages
-  if let Some(start) = msg.find('\'') {
-    if let Some(end) = msg[start + 1..].find('\'') {
+  if let Some(start) = msg.find('\'')
+    && let Some(end) = msg[start + 1..].find('\'') {
       return Some(msg[start + 1..start + 1 + end].to_string());
     }
-  }
   None
 }
 
@@ -901,86 +848,9 @@ fn find_derivation_by_activity(
 }
 
 /// Maintain state consistency
-pub fn maintain_state(state: &mut State, now: f64) {
+pub fn maintain_state(state: &mut State, _now: f64) {
   // Clear touched IDs - they've been processed
-  if !state.touched_ids.is_empty() {
-    state.touched_ids.clear();
-  }
-
-  // Update summaries
-  update_summaries(state, now);
-}
-
-fn update_summaries(state: &mut State, _now: f64) {
-  use tracing::debug;
-
-  // Update build summaries
-  state.full_summary.planned_builds.clear();
-  state.full_summary.running_builds.clear();
-  state.full_summary.completed_builds.clear();
-  state.full_summary.failed_builds.clear();
-
-  debug!(
-    "update_summaries: processing {} derivations",
-    state.derivation_infos.len()
-  );
-
-  let mut building_count = 0;
-  let mut planned_count = 0;
-
-  for (drv_id, info) in &state.derivation_infos {
-    debug!("  derivation {} status: {:?}", drv_id, info.build_status);
-    match &info.build_status {
-      BuildStatus::Planned => {
-        // Only count explicitly planned builds, not unknown ones
-        state.full_summary.planned_builds.insert(*drv_id);
-        planned_count += 1;
-      },
-      BuildStatus::Unknown => {
-        // Unknown derivations are cached/already built, don't count them
-      },
-      BuildStatus::Building(build_info) => {
-        debug!("  → Adding {} to running_builds", drv_id);
-        state
-          .full_summary
-          .running_builds
-          .insert(*drv_id, build_info.clone());
-        building_count += 1;
-      },
-      BuildStatus::Built { info, end } => {
-        state.full_summary.completed_builds.insert(
-          *drv_id,
-          CompletedBuildInfo {
-            start: info.start,
-            end:   *end,
-            host:  info.host.clone(),
-          },
-        );
-      },
-      BuildStatus::Failed { info, fail } => {
-        state
-          .full_summary
-          .failed_builds
-          .insert(*drv_id, FailedBuildInfo {
-            start:     info.start,
-            end:       fail.at,
-            host:      info.host.clone(),
-            fail_type: fail.fail_type.clone(),
-          });
-      },
-    }
-  }
-
-  debug!(
-    "update_summaries complete: {} running (counted {}), {} planned (counted \
-     {}), {} completed, {} failed",
-    state.full_summary.running_builds.len(),
-    building_count,
-    state.full_summary.planned_builds.len(),
-    planned_count,
-    state.full_summary.completed_builds.len(),
-    state.full_summary.failed_builds.len()
-  );
+  state.touched_ids.clear();
 }
 
 fn complete_build_success(state: &mut State, drv_id: DerivationId, now: f64) {
@@ -1029,23 +899,15 @@ pub fn finish_state(state: &mut State) {
     if let Some(transfer) =
       state.full_summary.running_downloads.remove(&path_id)
     {
-      let completed = CompletedTransferInfo {
-        start:       transfer.start,
-        end:         current_time(),
-        host:        transfer.host,
-        total_bytes: transfer.total_bytes.unwrap_or(0),
-      };
-      state
-        .full_summary
-        .completed_downloads
-        .insert(path_id, completed.clone());
-
-      if let Some(path_info) = state.get_store_path_info_mut(path_id) {
-        path_info.states.clear();
-        path_info
-          .states
-          .insert(StorePathState::Downloaded(completed));
-      }
+      state.full_summary.completed_downloads.insert(
+        path_id,
+        CompletedTransferInfo {
+          start:       transfer.start,
+          end:         current_time(),
+          host:        transfer.host,
+          total_bytes: transfer.total_bytes.unwrap_or(0),
+        },
+      );
     }
   }
 
@@ -1054,21 +916,15 @@ pub fn finish_state(state: &mut State) {
   for path_id in uploading {
     if let Some(transfer) = state.full_summary.running_uploads.remove(&path_id)
     {
-      let completed = CompletedTransferInfo {
-        start:       transfer.start,
-        end:         current_time(),
-        host:        transfer.host,
-        total_bytes: transfer.total_bytes.unwrap_or(0),
-      };
-      state
-        .full_summary
-        .completed_uploads
-        .insert(path_id, completed.clone());
-
-      if let Some(path_info) = state.get_store_path_info_mut(path_id) {
-        path_info.states.clear();
-        path_info.states.insert(StorePathState::Uploaded(completed));
-      }
+      state.full_summary.completed_uploads.insert(
+        path_id,
+        CompletedTransferInfo {
+          start:       transfer.start,
+          end:         current_time(),
+          host:        transfer.host,
+          total_bytes: transfer.total_bytes.unwrap_or(0),
+        },
+      );
     }
   }
 }
