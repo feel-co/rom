@@ -43,11 +43,10 @@ fn test_missing_expression_errors() {
 
 #[test]
 fn test_valid_expression_with_passthrough_args_succeeds() {
-  // With expression and passthrough args, should not error about missing
-  // expression.
+  // With a package and passthrough nix flags, the expression check passes.
+  // --dry-run exits quickly without building anything.
   let (_out, err, _status) =
-    run_rom(&["build", "nixpkgs#hello", "--", "--rebuild"]);
-  // Should not error about missing expression
+    run_rom(&["build", "nixpkgs#hello", "--", "--dry-run"]);
   assert!(
     !err.contains("No package or flake specified for build"),
     "should not print missing expression error, got: {err}"

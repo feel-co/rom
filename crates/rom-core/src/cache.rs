@@ -6,6 +6,7 @@ use std::{
   time::SystemTime,
 };
 
+use chrono::{DateTime, NaiveDateTime, Utc};
 use csv::{Reader, Writer};
 use serde::{Deserialize, Serialize};
 
@@ -35,25 +36,15 @@ impl BuildReportCache {
     Self { cache_path }
   }
 
-  // FIXME: just use the dirs crate for this
-  /// Get the default cache directory path
-  ///
-  /// Uses `$XDG_STATE_HOME` if set, otherwise ``~/.local/state`
-  #[must_use]
-  pub fn default_cache_dir() -> PathBuf {
-    if let Ok(xdg_state) = std::env::var("XDG_STATE_HOME") {
-      PathBuf::from(xdg_state).join("rom")
-    } else if let Ok(home) = std::env::var("HOME") {
-      PathBuf::from(home).join(".local/state/rom")
-    } else {
-      PathBuf::from(".rom")
-    }
-  }
-
   /// Get the default cache file path
   #[must_use]
   pub fn default_cache_path() -> PathBuf {
-    Self::default_cache_dir().join("build-reports.csv")
+    dirs::state_dir()
+      .unwrap_or_else(|| {
+        dirs::home_dir().unwrap_or_default().join(".local/state")
+      })
+      .join("rom")
+      .join("build-reports.csv")
   }
 
   /// Load build reports from CSV
@@ -214,115 +205,23 @@ impl BuildReportCache {
   }
 }
 
-/// Parse UTC time string in format "%Y-%m-%d %H:%M:%S"
 fn parse_utc_time(s: &str) -> Option<SystemTime> {
-  // Simple parsing for "YYYY-MM-DD HH:MM:SS" format
-  let parts: Vec<&str> = s.split([' ', '-', ':']).collect();
-  if parts.len() != 6 {
+  let ndt = NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").ok()?;
+  let dt: DateTime<Utc> = ndt.and_utc();
+  let secs = dt.timestamp();
+  if secs < 0 {
     return None;
   }
-
-  let year: i64 = parts[0].parse().ok()?;
-  let month: u64 = parts[1].parse().ok()?;
-  let day: u64 = parts[2].parse().ok()?;
-  let hour: u64 = parts[3].parse().ok()?;
-  let minute: u64 = parts[4].parse().ok()?;
-  let second: u64 = parts[5].parse().ok()?;
-
-  // Approximate conversion to Unix timestamp
-  // This is a simplified calculation that doesn't handle leap years perfectly
-  let days_since_epoch = (year - 1970) * 365
-    + (year - 1969) / 4
-    + days_until_month(month)
-    + day as i64
-    - 1;
-  let seconds_since_epoch =
-    days_since_epoch as u64 * 86400 + hour * 3600 + minute * 60 + second;
-
-  Some(
-    SystemTime::UNIX_EPOCH
-      + std::time::Duration::from_secs(seconds_since_epoch),
-  )
+  Some(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs as u64))
 }
 
-// FIXME: I'm really sure there's a library for this but lets just get
-// this thing compiling
-/// Calculate days until the start of a month (approximation)
-const fn days_until_month(month: u64) -> i64 {
-  match month {
-    1 => 0,
-    2 => 31,
-    3 => 59,
-    4 => 90,
-    5 => 120,
-    6 => 151,
-    7 => 181,
-    8 => 212,
-    9 => 243,
-    10 => 273,
-    11 => 304,
-    12 => 334,
-    _ => 0,
-  }
-}
-
-// FIXME: does Chrono do this?
-/// Format `SystemTime` as UTC string in format "%Y-%m-%d %H:%M:%S"
 fn format_utc_time(time: SystemTime) -> String {
   let duration = time
     .duration_since(SystemTime::UNIX_EPOCH)
     .unwrap_or_default();
-  let secs = duration.as_secs();
-
-  let days = secs / 86400;
-  let remaining = secs % 86400;
-  let hours = remaining / 3600;
-  let minutes = (remaining % 3600) / 60;
-  let seconds = remaining % 60;
-
-  // Approximate conversion from days since epoch to date
-  let mut year = 1970;
-  let mut days_left = days as i64;
-
-  // Subtract full years
-  while days_left >= 365 {
-    if is_leap_year(year) && days_left >= 366 {
-      days_left -= 366;
-      year += 1;
-    } else if !is_leap_year(year) {
-      days_left -= 365;
-      year += 1;
-    } else {
-      break;
-    }
-  }
-
-  // Calculate month and day
-  let (month, day) = calculate_month_day(days_left as u64, is_leap_year(year));
-
-  format!("{year:04}-{month:02}-{day:02} {hours:02}:{minutes:02}:{seconds:02}")
-}
-
-const fn is_leap_year(year: i64) -> bool {
-  (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
-}
-
-fn calculate_month_day(days: u64, is_leap: bool) -> (u8, u8) {
-  let days_in_month: [u8; 12] = if is_leap {
-    [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-  } else {
-    [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-  };
-
-  let mut remaining = days as i32;
-  for (i, &month_days) in days_in_month.iter().enumerate() {
-    if remaining < i32::from(month_days) {
-      return ((i + 1) as u8, (remaining + 1) as u8);
-    }
-    remaining -= i32::from(month_days);
-  }
-
-  (12, 31)
+  let dt = DateTime::<Utc>::from_timestamp(duration.as_secs() as i64, 0)
+    .unwrap_or_default();
+  dt.format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
 #[cfg(test)]
@@ -398,11 +297,10 @@ mod tests {
     let formatted = format_utc_time(time);
     let parsed = parse_utc_time(&formatted).unwrap();
 
-    // Allow small difference due to approximation
     let diff = parsed
       .duration_since(time)
       .unwrap_or_else(|e| e.duration())
       .as_secs();
-    assert!(diff < 86400); // less than 1 day difference
+    assert_eq!(diff, 0);
   }
 }

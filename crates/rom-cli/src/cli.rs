@@ -7,6 +7,7 @@ use std::{
 
 use clap::Parser;
 use cognos::ProgressState;
+use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Parser)]
 #[command(name = "rom", version, about = "ROM - A Nix build output monitor")]
@@ -42,47 +43,89 @@ pub struct Cli {
   #[arg(long, global = true)]
   pub log_lines: Option<usize>,
 
-  /// Nix-family evaluator to use: nix, lix (default: auto-detect)
+  /// Nix-family evaluator to use. Auto-detected by default
   #[arg(long, global = true)]
   pub platform: Option<String>,
+
+  /// Increase verbosity; controls nix log level and rom diagnostic output.
+  /// Repeatable: -v (info), -vv (debug), -vvv (trace)
+  #[arg(short = 'v', action = clap::ArgAction::Count, global = true)]
+  pub verbose: u8,
 }
 
 #[derive(Debug, clap::Subcommand)]
 pub enum Commands {
   /// Run nix build with monitoring
   Build {
-    /// Package/flake to build and arguments to pass to Nix
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-    args: Vec<String>,
+    /// Packages or flake expressions to build
+    packages: Vec<String>,
+
+    /// Extra flags to pass directly to nix
+    #[arg(last = true)]
+    nix_flags: Vec<String>,
   },
 
   /// Run nix shell with monitoring
   Shell {
-    /// Package/flake and arguments to pass to Nix
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-    args: Vec<String>,
+    /// Packages or flake expressions
+    packages: Vec<String>,
+
+    /// Extra flags to pass directly to nix
+    #[arg(last = true)]
+    nix_flags: Vec<String>,
   },
 
   /// Run nix develop with monitoring
   Develop {
-    /// Package/flake and arguments to pass to nix Nix
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-    args: Vec<String>,
+    /// Packages or flake expressions
+    packages: Vec<String>,
+
+    /// Extra flags to pass directly to nix
+    #[arg(last = true)]
+    nix_flags: Vec<String>,
   },
+}
+
+struct WrapperConfig {
+  platform:         cognos::Platform,
+  silent:           bool,
+  verbose:          u8,
+  format:           rom_core::types::DisplayFormat,
+  legend_style:     rom_core::types::LegendStyle,
+  summary_style:    rom_core::types::SummaryStyle,
+  log_prefix_style: rom_core::types::LogPrefixStyle,
+  log_lines:        Option<usize>,
 }
 
 /// Run the CLI application
 pub fn run() -> eyre::Result<()> {
   let cli = Cli::parse();
 
+  // Initialize tracing based on verbosity level; RUST_LOG overrides
+  let default_filter = match cli.verbose {
+    0 => "rom=warn",
+    1 => "rom=info",
+    2 => "rom=debug",
+    _ => "rom=trace",
+  };
+  tracing_subscriber::fmt()
+    .with_env_filter(
+      EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new(default_filter)),
+    )
+    .with_target(false)
+    .with_writer(std::io::stderr)
+    .init();
+
   // Pre-parse typed display values before any moves of cli
-  let format = crate::types::DisplayFormat::from_str(&cli.format);
-  let legend_style = crate::types::LegendStyle::from_str(&cli.legend);
-  let summary_style = crate::types::SummaryStyle::from_str(&cli.summary);
+  let format = rom_core::types::DisplayFormat::from_str(&cli.format);
+  let legend_style = rom_core::types::LegendStyle::from_str(&cli.legend);
+  let summary_style = rom_core::types::SummaryStyle::from_str(&cli.summary);
   let log_prefix_style =
-    crate::types::LogPrefixStyle::from_str(&cli.log_prefix);
+    rom_core::types::LogPrefixStyle::from_str(&cli.log_prefix);
   let log_lines = cli.log_lines;
   let silent = cli.silent;
+  let verbose = cli.verbose;
   let json = cli.json;
   let platform = cli
     .platform
@@ -101,8 +144,8 @@ pub fn run() -> eyre::Result<()> {
     })
     .unwrap_or_else(|| "rom".to_string());
 
-  let make_config = |input_mode: crate::types::InputMode| {
-    crate::types::Config {
+  let make_config = |input_mode: rom_core::types::InputMode| {
+    rom_core::types::Config {
       piping: false,
       silent,
       input_mode,
@@ -116,152 +159,128 @@ pub fn run() -> eyre::Result<()> {
     }
   };
 
+  let cfg = WrapperConfig {
+    platform,
+    silent,
+    verbose,
+    format,
+    legend_style,
+    summary_style,
+    log_prefix_style,
+    log_lines,
+  };
+
   match (&program_name[..], cli.command) {
     // rom-build symlink
     ("rom-build", _) => {
       let args: Vec<String> = std::env::args().skip(1).collect();
-      let (package_and_rom_args, nix_args) = parse_args_with_separator(&args);
-      run_build_wrapper(
-        platform,
-        package_and_rom_args,
-        nix_args,
-        silent,
-        format,
-        legend_style,
-        summary_style,
-        log_prefix_style,
-        log_lines,
-      )?;
+      let (packages, nix_flags) = parse_args_with_separator(&args);
+      run_build_wrapper(packages, nix_flags, &cfg)?;
       Ok(())
     },
 
     // rom-shell symlink
     ("rom-shell", _) => {
       let args: Vec<String> = std::env::args().skip(1).collect();
-      let (package_and_rom_args, nix_args) = parse_args_with_separator(&args);
-      run_shell_wrapper(
-        platform,
-        package_and_rom_args,
-        nix_args,
-        silent,
-        format,
-        legend_style,
-        summary_style,
-        log_prefix_style,
-        log_lines,
-      )?;
+      let (packages, nix_flags) = parse_args_with_separator(&args);
+      run_shell_wrapper(packages, nix_flags, &cfg)?;
       Ok(())
     },
 
     // rom build command
-    (_, Some(Commands::Build { args })) => {
-      if args.is_empty() && json {
+    (
+      _,
+      Some(Commands::Build {
+        packages,
+        nix_flags,
+      }),
+    ) => {
+      if packages.is_empty() && json {
         let stdin = io::stdin();
         let stdout = io::stdout();
-        return Ok(crate::monitor_stream(
-          make_config(crate::types::InputMode::Json),
+        return Ok(rom_core::monitor_stream(
+          make_config(rom_core::types::InputMode::Json),
           stdin.lock(),
           stdout.lock(),
         )?);
       }
-      let (package_and_rom_args, nix_args) = parse_args_with_separator(&args);
-      if package_and_rom_args.is_empty() {
+      if packages.is_empty() {
         eyre::bail!(
           "No package or flake specified for build\nUsage: rom build \
            <package> [-- <flags>]\nExample: rom build nixpkgs#hello -- \
            --rebuild"
         );
       }
-      run_build_wrapper(
-        platform,
-        package_and_rom_args,
-        nix_args,
-        silent,
-        format,
-        legend_style,
-        summary_style,
-        log_prefix_style,
-        log_lines,
-      )?;
+      run_build_wrapper(packages, nix_flags, &cfg)?;
       Ok(())
     },
 
     // rom shell command
-    (_, Some(Commands::Shell { args })) => {
-      if args.is_empty() && json {
+    (
+      _,
+      Some(Commands::Shell {
+        packages,
+        nix_flags,
+      }),
+    ) => {
+      if packages.is_empty() && json {
         let stdin = io::stdin();
         let stdout = io::stdout();
-        return Ok(crate::monitor_stream(
-          make_config(crate::types::InputMode::Json),
+        return Ok(rom_core::monitor_stream(
+          make_config(rom_core::types::InputMode::Json),
           stdin.lock(),
           stdout.lock(),
         )?);
       }
-      let (package_and_rom_args, nix_args) = parse_args_with_separator(&args);
-      if package_and_rom_args.is_empty() {
+      if packages.is_empty() {
         eyre::bail!(
           "No package or flake specified for shell\nUsage: rom shell \
            <package> [-- <flags>]\nExample: rom shell nixpkgs#python3 -- \
            --pure"
         );
       }
-      run_shell_wrapper(
-        platform,
-        package_and_rom_args,
-        nix_args,
-        silent,
-        format,
-        legend_style,
-        summary_style,
-        log_prefix_style,
-        log_lines,
-      )?;
+      run_shell_wrapper(packages, nix_flags, &cfg)?;
       Ok(())
     },
 
     // rom develop command
-    (_, Some(Commands::Develop { args })) => {
-      if args.is_empty() && json {
+    (
+      _,
+      Some(Commands::Develop {
+        packages,
+        nix_flags,
+      }),
+    ) => {
+      if packages.is_empty() && json {
         let stdin = io::stdin();
         let stdout = io::stdout();
-        return Ok(crate::monitor_stream(
-          make_config(crate::types::InputMode::Json),
+        return Ok(rom_core::monitor_stream(
+          make_config(rom_core::types::InputMode::Json),
           stdin.lock(),
           stdout.lock(),
         )?);
       }
-      let (package_and_rom_args, nix_args) = parse_args_with_separator(&args);
-      if package_and_rom_args.is_empty() {
+      if packages.is_empty() {
         eyre::bail!(
           "No package or flake specified for develop\nUsage: rom develop \
            <package> [-- <flags>]\nExample: rom develop nixpkgs#hello -- \
            --impure"
         );
       }
-      run_develop_wrapper(
-        platform,
-        package_and_rom_args,
-        nix_args,
-        silent,
-        format,
-        legend_style,
-        summary_style,
-        log_prefix_style,
-        log_lines,
-      )?;
+      run_develop_wrapper(packages, nix_flags, &cfg)?;
       Ok(())
     },
 
     // Direct piping mode, read from stdin
     (_, None) => {
       let input_mode = if json {
-        crate::types::InputMode::Json
+        rom_core::types::InputMode::Json
       } else {
-        crate::types::InputMode::Human
+        rom_core::types::InputMode::Human
       };
       let stdin = io::stdin();
       let stdout = io::stdout();
-      Ok(crate::monitor_stream(
+      Ok(rom_core::monitor_stream(
         make_config(input_mode),
         stdin.lock(),
         stdout.lock(),
@@ -293,18 +312,19 @@ pub fn parse_args_with_separator(
   }
 }
 
+/// Returns the nix verbosity flag for the given level.
+/// Always produces at least `-v` so build events are emitted via
+/// `--log-format internal-json`.
+fn nix_verbosity_flag(verbose: u8) -> String {
+  format!("-{}", "v".repeat(verbose.max(1) as usize))
+}
+
 fn run_build_wrapper(
-  platform: cognos::Platform,
-  package_and_rom_args: Vec<String>,
-  user_nix_args: Vec<String>,
-  silent: bool,
-  format: crate::types::DisplayFormat,
-  legend_style: crate::types::LegendStyle,
-  summary_style: crate::types::SummaryStyle,
-  log_prefix_style: crate::types::LogPrefixStyle,
-  log_lines: Option<usize>,
+  packages: Vec<String>,
+  nix_flags: Vec<String>,
+  cfg: &WrapperConfig,
 ) -> eyre::Result<()> {
-  if package_and_rom_args.is_empty() {
+  if packages.is_empty() {
     eyre::bail!(
       "No package or flake specified for build\nUsage: rom build <package> \
        [-- <flags>]\nExample: rom build nixpkgs#hello -- --rebuild"
@@ -313,23 +333,14 @@ fn run_build_wrapper(
 
   let mut cmd_args = vec![
     "build".to_string(),
-    "-v".to_string(),
+    nix_verbosity_flag(cfg.verbose),
     "--log-format".to_string(),
     "internal-json".to_string(),
   ];
-  cmd_args.extend(package_and_rom_args);
-  cmd_args.extend(user_nix_args);
+  cmd_args.extend(packages);
+  cmd_args.extend(nix_flags);
 
-  let exit_code = run_monitored_command(
-    platform.binary(),
-    cmd_args,
-    silent,
-    format,
-    legend_style,
-    summary_style,
-    log_prefix_style,
-    log_lines,
-  )?;
+  let exit_code = run_monitored_command(cfg.platform.binary(), cmd_args, cfg)?;
   if exit_code != 0 {
     std::process::exit(exit_code);
   }
@@ -337,17 +348,11 @@ fn run_build_wrapper(
 }
 
 fn run_shell_wrapper(
-  platform: cognos::Platform,
-  package_and_rom_args: Vec<String>,
-  user_nix_args: Vec<String>,
-  silent: bool,
-  format: crate::types::DisplayFormat,
-  legend_style: crate::types::LegendStyle,
-  summary_style: crate::types::SummaryStyle,
-  log_prefix_style: crate::types::LogPrefixStyle,
-  log_lines: Option<usize>,
+  packages: Vec<String>,
+  nix_flags: Vec<String>,
+  cfg: &WrapperConfig,
 ) -> eyre::Result<()> {
-  if package_and_rom_args.is_empty() {
+  if packages.is_empty() {
     eyre::bail!(
       "No package or flake specified for shell\nUsage: rom shell <package> \
        [-- <flags>]\nExample: rom shell nixpkgs#python3 -- --pure"
@@ -357,38 +362,31 @@ fn run_shell_wrapper(
   // First pass: monitor the build phase with --command exit
   let mut monitor_args = vec![
     "shell".to_string(),
-    "-v".to_string(),
+    nix_verbosity_flag(cfg.verbose),
     "--log-format".to_string(),
     "internal-json".to_string(),
   ];
-  monitor_args.extend(replace_command_with_exit(&package_and_rom_args));
-  monitor_args.extend(user_nix_args.clone());
+  let shell_args: Vec<String> =
+    packages.iter().chain(nix_flags.iter()).cloned().collect();
+  monitor_args.extend(replace_command_with_exit(&shell_args));
 
-  let exit_code = run_monitored_command(
-    platform.binary(),
-    monitor_args,
-    silent,
-    format,
-    legend_style,
-    summary_style,
-    log_prefix_style,
-    log_lines,
-  )?;
+  let exit_code =
+    run_monitored_command(cfg.platform.binary(), monitor_args, cfg)?;
 
   if exit_code != 0 {
     std::process::exit(exit_code);
   }
 
   // Second pass: enter the actual shell
-  if !silent {
+  if !cfg.silent {
     let mut shell_args = vec!["shell".to_string()];
-    shell_args.extend(package_and_rom_args);
-    shell_args.extend(user_nix_args);
+    shell_args.extend(packages);
+    shell_args.extend(nix_flags);
 
-    let status = Command::new(platform.binary())
+    let status = Command::new(cfg.platform.binary())
       .args(&shell_args)
       .status()
-      .map_err(crate::error::RomError::Io)?;
+      .map_err(rom_core::error::RomError::Io)?;
 
     std::process::exit(status.code().unwrap_or(1));
   }
@@ -397,53 +395,39 @@ fn run_shell_wrapper(
 }
 
 fn run_develop_wrapper(
-  platform: cognos::Platform,
-  package_and_rom_args: Vec<String>,
-  user_nix_args: Vec<String>,
-  silent: bool,
-  format: crate::types::DisplayFormat,
-  legend_style: crate::types::LegendStyle,
-  summary_style: crate::types::SummaryStyle,
-  log_prefix_style: crate::types::LogPrefixStyle,
-  log_lines: Option<usize>,
+  packages: Vec<String>,
+  nix_flags: Vec<String>,
+  cfg: &WrapperConfig,
 ) -> eyre::Result<()> {
   // First pass: monitor with --command true
   let mut monitor_args = vec![
     "develop".to_string(),
-    "-v".to_string(),
+    nix_verbosity_flag(cfg.verbose),
     "--log-format".to_string(),
     "internal-json".to_string(),
     "--command".to_string(),
     "true".to_string(),
   ];
-  monitor_args.extend(package_and_rom_args.clone());
-  monitor_args.extend(user_nix_args.clone());
+  monitor_args.extend(packages.clone());
+  monitor_args.extend(nix_flags.clone());
 
-  let exit_code = run_monitored_command(
-    platform.binary(),
-    monitor_args,
-    silent,
-    format,
-    legend_style,
-    summary_style,
-    log_prefix_style,
-    log_lines,
-  )?;
+  let exit_code =
+    run_monitored_command(cfg.platform.binary(), monitor_args, cfg)?;
 
   if exit_code != 0 {
     std::process::exit(exit_code);
   }
 
   // Second pass: enter the actual dev shell
-  if !silent {
+  if !cfg.silent {
     let mut develop_args = vec!["develop".to_string()];
-    develop_args.extend(package_and_rom_args);
-    develop_args.extend(user_nix_args);
+    develop_args.extend(packages);
+    develop_args.extend(nix_flags);
 
-    let status = Command::new(platform.binary())
+    let status = Command::new(cfg.platform.binary())
       .args(&develop_args)
       .status()
-      .map_err(crate::error::RomError::Io)?;
+      .map_err(rom_core::error::RomError::Io)?;
 
     std::process::exit(status.code().unwrap_or(1));
   }
@@ -454,13 +438,14 @@ fn run_develop_wrapper(
 fn run_monitored_command(
   command: &str,
   args: Vec<String>,
-  silent: bool,
-  format: crate::types::DisplayFormat,
-  legend_style: crate::types::LegendStyle,
-  summary_style: crate::types::SummaryStyle,
-  log_prefix_style: crate::types::LogPrefixStyle,
-  log_line_limit: Option<usize>,
+  cfg: &WrapperConfig,
 ) -> eyre::Result<i32> {
+  let silent = cfg.silent;
+  let format = cfg.format;
+  let legend_style = cfg.legend_style;
+  let summary_style = cfg.summary_style;
+  let log_prefix_style = cfg.log_prefix_style;
+  let log_line_limit = cfg.log_lines;
   use std::{
     io::{BufRead, BufReader},
     sync::{Arc, Mutex},
@@ -473,13 +458,13 @@ fn run_monitored_command(
     .stdout(Stdio::piped())
     .stderr(Stdio::piped())
     .spawn()
-    .map_err(crate::error::RomError::Io)?;
+    .map_err(rom_core::error::RomError::Io)?;
 
   let stderr = child.stderr.take().expect("Failed to capture stderr");
   let stdout = child.stdout.take().expect("Failed to capture stdout");
 
   // Create shared state
-  let state = Arc::new(Mutex::new(crate::state::State::new()));
+  let state = Arc::new(Mutex::new(rom_core::state::State::new()));
   let state_clone = state.clone();
   let render_state = state;
 
@@ -488,7 +473,7 @@ fn run_monitored_command(
   let processing_done_clone = processing_done.clone();
 
   // Track start time for initial timer
-  let start_time = Arc::new(Mutex::new(crate::state::current_time()));
+  let start_time = Arc::new(Mutex::new(rom_core::state::current_time()));
   let start_time_clone = start_time;
 
   // Buffer for build logs - collected and passed to Display for coordinated
@@ -515,10 +500,10 @@ fn run_monitored_command(
           // Process the action first to update state
           let mut state = state_clone.lock().unwrap();
           let derivation_count_before = state.derivation_infos.len();
-          crate::update::process_message(&mut state, action.clone());
-          crate::update::maintain_state(
+          rom_core::update::process_message(&mut state, action.clone());
+          rom_core::update::maintain_state(
             &mut state,
-            crate::state::current_time(),
+            rom_core::state::current_time(),
           );
           let derivation_count_after = state.derivation_infos.len();
 
@@ -603,9 +588,9 @@ fn run_monitored_command(
     }
   });
 
-  // Render loop - this is what displays the build graph
+  // Render loop, this is what displays the build graph
   let render_thread = thread::spawn(move || {
-    use crate::display::{Display, DisplayConfig};
+    use rom_core::display::{Display, DisplayConfig};
 
     let display_config = DisplayConfig {
       show_timers: !silent,
@@ -615,6 +600,7 @@ fn run_monitored_command(
       format,
       legend_style,
       summary_style,
+      icons: rom_core::icons::detect(),
     };
 
     let mut display = Display::new(io::stderr(), display_config).unwrap();
@@ -644,9 +630,9 @@ fn run_monitored_command(
         } else {
           // Show initial timer while waiting for activity
           let start = *start_time_clone.lock().unwrap();
-          let elapsed = crate::state::current_time() - start;
+          let elapsed = rom_core::state::current_time() - start;
           let timer_text =
-            format!("⏱ {}", crate::display::format_duration(elapsed));
+            format!("⏱ {}", rom_core::display::format_duration(elapsed));
 
           // Only update if changed (to avoid flicker)
           if last_timer_display.as_ref() != Some(&timer_text) {
@@ -661,19 +647,17 @@ fn run_monitored_command(
       }
     }
 
-    // Give it a moment for final state updates
-    thread::sleep(Duration::from_millis(50));
-
     // Final render
+    thread::sleep(Duration::from_millis(50));
     if !silent {
       let mut state = render_state.lock().unwrap();
-      crate::update::finish_state(&mut state);
+      rom_core::update::finish_state(&mut state);
       let _ = display.render_final(&state);
     }
   });
 
   // Wait for process to complete
-  let status = child.wait().map_err(crate::error::RomError::Io)?;
+  let status = child.wait().map_err(rom_core::error::RomError::Io)?;
 
   // Wait for threads to finish
   let _ = stderr_thread.join();

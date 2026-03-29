@@ -1,5 +1,4 @@
 //! State management for ROM
-
 use std::{
   collections::{HashMap, HashSet},
   path::PathBuf,
@@ -444,15 +443,11 @@ impl State {
     use cognos::aterm;
     use tracing::debug;
 
-    // Check if we've already parsed this derivation's dependencies
-    // to avoid infinite recursion in circular dependency graphs
-    let already_parsed = {
-      if let Some(info) = self.get_derivation_info(drv_id) {
-        !info.input_derivations.is_empty()
-      } else {
-        false
-      }
-    };
+    // platform is always set after a successful parse; use it as the
+    // "already parsed" marker so leaf nodes (zero inputs) are not re-parsed.
+    let already_parsed = self
+      .get_derivation_info(drv_id)
+      .map_or(false, |info| info.platform.is_some());
 
     if already_parsed {
       debug!("Skipping already-parsed derivation {}", drv_id);
@@ -494,6 +489,21 @@ impl State {
 
     if let Some(info) = self.get_derivation_info_mut(drv_id) {
       info.platform = Some(parsed.platform);
+    }
+
+    // Register the derivation's output store paths
+    for (output_name, store_path_str) in &parsed.outputs {
+      if let Some(sp) = StorePath::parse(store_path_str) {
+        let sp_id = self.get_or_create_store_path_id(sp);
+        if let Some(sp_info) = self.get_store_path_info_mut(sp_id) {
+          sp_info.producer = Some(drv_id);
+        }
+        if let Some(drv_info) = self.get_derivation_info_mut(drv_id) {
+          drv_info
+            .outputs
+            .insert(cognos::OutputName::parse(output_name), sp_id);
+        }
+      }
     }
 
     // Check if parent derivation is actively building
@@ -575,8 +585,8 @@ impl State {
         // Remove from forest roots if it has a parent
         self.forest_roots.retain(|&id| id != input_drv_id);
 
-        // Recursively populate child dependencies
-        self.populate_derivation_dependencies(input_drv_id);
+        // Do not recurse: child dependencies are populated lazily when nix
+        // reports starting those builds via JSON events.
       }
     }
   }
@@ -620,6 +630,98 @@ impl State {
       self.full_summary.update_derivation(id, &new_status);
       self.touched_ids.insert(id);
     }
+
+    // Propagate changes up the parent chain
+    self.propagate_to_parents(id);
+  }
+
+  /// Recompute a derivation's own dependency_summary based on its build_status.
+  /// This does NOT include children's summaries. That's done by
+  /// `propagate_to_parents`.
+  fn recompute_own_summary(&mut self, id: DerivationId) {
+    let info = match self.derivation_infos.get(&id) {
+      Some(info) => info,
+      None => return,
+    };
+
+    let mut summary = DependencySummary::default();
+    summary.update_derivation(id, &info.build_status);
+
+    if let Some(info_mut) = self.derivation_infos.get_mut(&id) {
+      info_mut.dependency_summary = summary;
+    }
+  }
+
+  /// Recompute a derivation's full dependency_summary by merging:
+  /// 1. Its own contribution (based on build_status)
+  /// 2. All its children's dependency_summaries
+  fn recompute_derivation_summary(&mut self, id: DerivationId) {
+    // First, compute our own contribution
+    self.recompute_own_summary(id);
+
+    // Then merge all children's summaries
+    let children_ids: Vec<DerivationId> = {
+      let info = match self.derivation_infos.get(&id) {
+        Some(info) => info,
+        None => return,
+      };
+      info
+        .input_derivations
+        .iter()
+        .map(|input| input.derivation)
+        .collect()
+    };
+
+    let mut merged = DependencySummary::default();
+    // Our own summary
+    if let Some(info) = self.derivation_infos.get(&id) {
+      merged.merge(&info.dependency_summary);
+    }
+    // Merge children's summaries
+    for child_id in children_ids {
+      if let Some(child_info) = self.derivation_infos.get(&child_id) {
+        merged.merge(&child_info.dependency_summary);
+      }
+    }
+
+    if let Some(info_mut) = self.derivation_infos.get_mut(&id) {
+      info_mut.dependency_summary = merged;
+    }
+  }
+
+  /// Propagate a status change up the parent chain by recomputing each
+  /// ancestor's dependency_summary. This is for O(1) subtree aggregation.
+  fn propagate_to_parents(&mut self, id: DerivationId) {
+    // Collect all ancestors first to avoid borrowing issues
+    let mut ancestors: Vec<DerivationId> = Vec::new();
+    let mut current_parents = self.derivation_parents(id);
+    let mut visited: HashSet<DerivationId> = HashSet::new();
+
+    while let Some(parent_id) = current_parents.pop() {
+      if visited.insert(parent_id) {
+        ancestors.push(parent_id);
+        // Get this parent's parents for the next iteration
+        for grandparent_id in self.derivation_parents(parent_id) {
+          current_parents.push(grandparent_id);
+        }
+      }
+    }
+
+    // Recompute summaries from leaves up (reverse order of discovery)
+    // Since we collected ancestors in BFS order, we need to process them
+    // from end to beginning to go bottom-up
+    for ancestor_id in ancestors.into_iter().rev() {
+      self.recompute_derivation_summary(ancestor_id);
+    }
+  }
+
+  /// Get the parent derivations (derivations that depend on this one)
+  fn derivation_parents(&self, id: DerivationId) -> Vec<DerivationId> {
+    let info = match self.derivation_infos.get(&id) {
+      Some(info) => info,
+      None => return Vec::new(),
+    };
+    info.derivation_parents.iter().copied().collect()
   }
 
   #[must_use]

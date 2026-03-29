@@ -775,20 +775,47 @@ fn extract_store_path(text: &str) -> Option<String> {
 }
 
 /// Parse a host from the fields[1] string of a Build or Substitute activity.
-/// Strips ssh:// and https:// URI prefixes; empty or "localhost" -> Localhost.
+///
+/// - Empty string, "local", "local://", "unix", "unix://" -> Localhost
+/// - Properly strips proto:// prefix and extracts just the hostname
+/// - Strips user@ from user@host format
 fn parse_host(s: &str) -> Host {
-  let name = s
-    .trim()
+  let s = s.trim();
+
+  // Handle known localhost aliases
+  if s.is_empty()
+    || s == "localhost"
+    || s == "local"
+    || s == "local://"
+    || s == "unix"
+    || s == "unix://"
+  {
+    return Host::Localhost;
+  }
+
+  // Strip protocol prefix (ssh://, https://, http://, etc.)
+  let after_proto = s
     .strip_prefix("ssh://")
     .or_else(|| s.strip_prefix("https://"))
     .or_else(|| s.strip_prefix("http://"))
     .unwrap_or(s)
     .trim_end_matches('/');
 
-  if name.is_empty() || name == "localhost" {
+  if after_proto.is_empty() || after_proto == "localhost" {
+    return Host::Localhost;
+  }
+
+  // Strip user@ prefix if present (e.g., "user@hostname" -> "hostname")
+  let hostname = after_proto
+    .split('@')
+    .next_back()
+    .unwrap_or(after_proto)
+    .trim();
+
+  if hostname.is_empty() || hostname == "localhost" {
     Host::Localhost
   } else {
-    Host::Remote(name.to_string())
+    Host::Remote(hostname.to_string())
   }
 }
 
@@ -854,10 +881,165 @@ fn find_derivation_by_activity(
   None
 }
 
+fn build_sort_order(state: &State, drv_id: DerivationId) -> (u8, i64) {
+  let Some(info) = state.get_derivation_info(drv_id) else {
+    return (9, 0);
+  };
+  match &info.build_status {
+    BuildStatus::Failed { fail, .. } => (0, (fail.at * 1_000_000.0) as i64),
+    BuildStatus::Building(build_info) => {
+      (1, (build_info.start * 1_000_000.0) as i64)
+    },
+    BuildStatus::Planned => (4, 0),
+    BuildStatus::Built { end, .. } => (6, -(*end * 1_000_000.0) as i64),
+    BuildStatus::Unknown => (9, 0),
+  }
+}
+
+fn best_subtree_sort_order(
+  state: &State,
+  drv_id: DerivationId,
+  depth: u8,
+) -> (u8, i64) {
+  let own = build_sort_order(state, drv_id);
+  if depth == 0 {
+    return own;
+  }
+  let Some(info) = state.get_derivation_info(drv_id) else {
+    return own;
+  };
+  let children: Vec<DerivationId> = info
+    .input_derivations
+    .iter()
+    .map(|d| d.derivation)
+    .collect();
+  children
+    .into_iter()
+    .map(|child_id| best_subtree_sort_order(state, child_id, depth - 1))
+    .fold(
+      own,
+      |best, candidate| {
+        if candidate < best { candidate } else { best }
+      },
+    )
+}
+
+fn sort_key(
+  state: &State,
+  drv_id: DerivationId,
+) -> (u8, i64, u8, i64, usize, usize, usize) {
+  let (own_a, own_b) = build_sort_order(state, drv_id);
+  let (sub_a, sub_b) = best_subtree_sort_order(state, drv_id, 20);
+
+  let summary = state
+    .get_derivation_info(drv_id)
+    .map(|i| &i.dependency_summary);
+
+  let running_builds = summary.map_or(0, |s| s.running_builds.len());
+  let running_downloads = summary.map_or(0, |s| s.running_downloads.len());
+  let planned =
+    summary.map_or(0, |s| s.planned_builds.len() + s.planned_downloads.len());
+
+  (
+    own_a,
+    own_b,
+    sub_a,
+    sub_b,
+    usize::MAX.saturating_sub(running_builds),
+    usize::MAX.saturating_sub(running_downloads),
+    planned,
+  )
+}
+
+fn sort_tree_children(state: &mut State, drv_id: DerivationId) {
+  let Some(info) = state.derivation_infos.get(&drv_id) else {
+    return;
+  };
+  let mut inputs: Vec<InputDerivation> = info.input_derivations.clone();
+  inputs.sort_by_key(|d| sort_key(state, d.derivation));
+
+  if let Some(info) = state.derivation_infos.get_mut(&drv_id) {
+    info.input_derivations = inputs;
+  }
+}
+
+pub fn detect_local_completed_builds(state: &mut State, now: f64) -> bool {
+  let local_building: Vec<DerivationId> = state
+    .full_summary
+    .running_builds
+    .iter()
+    .filter(|(_, info)| info.host == cognos::Host::Localhost)
+    .map(|(id, _)| *id)
+    .collect();
+
+  let mut any_completed = false;
+
+  for drv_id in local_building {
+    let output_paths: Vec<std::path::PathBuf> = state
+      .get_derivation_info(drv_id)
+      .map(|info| {
+        info
+          .outputs
+          .values()
+          .filter_map(|&sp_id| {
+            state
+              .get_store_path_info(sp_id)
+              .map(|sp_info| sp_info.name.path.clone())
+          })
+          .collect()
+      })
+      .unwrap_or_default();
+
+    let all_exist =
+      !output_paths.is_empty() && output_paths.iter().all(|p| p.exists());
+    if all_exist {
+      let build_info = state.get_derivation_info(drv_id).and_then(|info| {
+        if let BuildStatus::Building(b) = &info.build_status {
+          Some(b.clone())
+        } else {
+          None
+        }
+      });
+
+      if let Some(build_info) = build_info {
+        let name = state
+          .get_derivation_info(drv_id)
+          .map(|i| i.name.name.clone())
+          .unwrap_or_default();
+        let platform = state
+          .get_derivation_info(drv_id)
+          .and_then(|i| i.platform.clone());
+        let start = build_info.start;
+        let host = build_info.host.clone();
+        state.update_build_status(drv_id, BuildStatus::Built {
+          info: build_info,
+          end:  now,
+        });
+        record_build_completion(state, name, platform, start, now, &host);
+        any_completed = true;
+      }
+    }
+  }
+
+  any_completed
+}
+
 /// Maintain state consistency
 pub fn maintain_state(state: &mut State, _now: f64) {
-  // Clear touched IDs - they've been processed
-  state.touched_ids.clear();
+  if !state.touched_ids.is_empty() {
+    let touched: Vec<DerivationId> =
+      state.touched_ids.iter().copied().collect();
+    for drv_id in touched {
+      sort_tree_children(state, drv_id);
+    }
+
+    let roots: Vec<DerivationId> = state.forest_roots.clone();
+    let mut sorted_roots = roots;
+    sorted_roots.sort_by_key(|&id| sort_key(state, id));
+    state.forest_roots = sorted_roots;
+
+    state.touched_ids.clear();
+  }
 }
 
 fn complete_build_success(state: &mut State, drv_id: DerivationId, now: f64) {

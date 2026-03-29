@@ -11,6 +11,7 @@ use crossterm::{
 };
 
 use crate::{
+  icons::Icons,
   state::{BuildStatus, DerivationId, State, current_time},
   types::{LegendStyle, SummaryStyle},
 };
@@ -35,6 +36,7 @@ pub struct DisplayConfig {
   pub format:            crate::types::DisplayFormat,
   pub legend_style:      LegendStyle,
   pub summary_style:     SummaryStyle,
+  pub icons:             &'static Icons,
 }
 
 impl Default for DisplayConfig {
@@ -47,6 +49,7 @@ impl Default for DisplayConfig {
       format:            crate::types::DisplayFormat::Tree,
       legend_style:      LegendStyle::Table,
       summary_style:     SummaryStyle::Concise,
+      icons:             crate::icons::detect(),
     }
   }
 }
@@ -203,36 +206,41 @@ impl<W: Write> Display<W> {
     let at = now.format("%H:%M:%S");
     let dur = self.format_duration(duration);
 
+    let ic = self.ic();
     let line = if failed > 0 {
       let noun = if failed == 1 { "failure" } else { "failures" };
       format!(
         "{} {} at {} after {}",
-        self.colored("⚠", Color::Red),
-        self
-          .colored(&format!("Exited after {failed} build {noun}"), Color::Red),
-        self.colored(&at.to_string(), Color::Red),
-        self.colored(&dur, Color::Red),
+        self.colored(ic.failed, Color::DarkRed),
+        self.colored(
+          &format!("Exited after {failed} build {noun}"),
+          Color::DarkRed
+        ),
+        self.colored(&at.to_string(), Color::DarkRed),
+        self.colored(&dur, Color::DarkRed),
       )
     } else if nix_errors > 0 {
       let noun = if nix_errors == 1 { "error" } else { "errors" };
       format!(
         "{} {} at {} after {}",
-        self.colored("⚠", Color::Red),
-        self
-          .colored(&format!("Exited with {nix_errors} nix {noun}"), Color::Red),
-        self.colored(&at.to_string(), Color::Red),
-        self.colored(&dur, Color::Red),
+        self.colored(ic.failed, Color::DarkRed),
+        self.colored(
+          &format!("Exited with {nix_errors} nix {noun}"),
+          Color::DarkRed
+        ),
+        self.colored(&at.to_string(), Color::DarkRed),
+        self.colored(&dur, Color::DarkRed),
       )
     } else {
       let mut s = format!(
         "{} after {}",
-        self.colored(&format!("Finished at {at}"), Color::Green),
-        self.colored(&dur, Color::Green),
+        self.colored(&format!("Finished at {at}"), Color::DarkGreen),
+        self.colored(&dur, Color::DarkGreen),
       );
       if completed > 0 {
         s.push_str(&format!(
-          "  {}",
-          self.colored(&format!("✔ {completed}"), Color::Green)
+          "  {} {completed}",
+          self.colored(ic.done, Color::DarkGreen)
         ));
       }
       s
@@ -279,9 +287,10 @@ impl<W: Write> Display<W> {
     if ul_done > 0 {
       hdr_parts.push("Uploads");
     }
+    let ic = self.ic();
     lines.push(format!(
       "{} {}",
-      self.colored("━━━", Color::Blue),
+      self.colored("┏━━━", Color::DarkBlue),
       hdr_parts.join("  ")
     ));
 
@@ -293,16 +302,22 @@ impl<W: Write> Display<W> {
         let (done, fail) = host_map[host];
         let mut parts = Vec::new();
         if done > 0 {
-          parts.push(format!("{} {done}", self.colored("✔", Color::Green)));
+          parts.push(format!(
+            "{} {done}",
+            self.colored(ic.done, Color::DarkGreen)
+          ));
         }
         if fail > 0 {
-          parts.push(format!("{} {fail}", self.colored("✗", Color::Red)));
+          parts.push(format!(
+            "{} {fail}",
+            self.colored(ic.failed, Color::DarkRed)
+          ));
         }
         lines.push(format!(
           "{}  {}  {}",
-          self.colored("┃", Color::Blue),
+          self.colored("┃", Color::DarkBlue),
           parts.join("  "),
-          self.colored(host, Color::Magenta),
+          self.colored(host, Color::DarkMagenta),
         ));
       }
     }
@@ -310,29 +325,40 @@ impl<W: Write> Display<W> {
     // Final ∑ line
     let mut sum_parts = Vec::new();
     if completed > 0 {
-      sum_parts
-        .push(format!("{} {completed}", self.colored("✔", Color::Green)));
+      sum_parts.push(format!(
+        "{} {completed}",
+        self.colored(ic.done, Color::DarkGreen)
+      ));
     }
     if failed > 0 {
-      sum_parts.push(format!("{} {failed}", self.colored("✗", Color::Red)));
+      sum_parts.push(format!(
+        "{} {failed}",
+        self.colored(ic.failed, Color::DarkRed)
+      ));
     }
     if dl_done > 0 {
-      sum_parts.push(format!("{} {dl_done}", self.colored("↓", Color::Green)));
+      sum_parts.push(format!(
+        "{} {dl_done}",
+        self.colored(ic.download, Color::DarkGreen)
+      ));
     }
     if ul_done > 0 {
-      sum_parts.push(format!("{} {ul_done}", self.colored("↑", Color::Green)));
+      sum_parts.push(format!(
+        "{} {ul_done}",
+        self.colored(ic.upload, Color::DarkGreen)
+      ));
     }
 
     let finish = if failed > 0 || !state.nix_errors.is_empty() {
-      self.colored(&format!("Exited at {at} after {dur}"), Color::Red)
+      self.colored(&format!("Exited at {at} after {dur}"), Color::DarkRed)
     } else {
-      self.colored(&format!("Finished at {at} after {dur}"), Color::Green)
+      self.colored(&format!("Finished at {at} after {dur}"), Color::DarkGreen)
     };
     sum_parts.push(finish);
 
     lines.push(format!(
       "{} ∑ {}",
-      self.colored("┗━", Color::Blue),
+      self.colored("┗━", Color::DarkBlue),
       sum_parts.join("  │  ")
     ));
 
@@ -350,24 +376,28 @@ impl<W: Write> Display<W> {
     let now = chrono::Local::now();
     let at = now.format("%H:%M:%S");
 
-    let v = self.colored("┃", Color::Blue);
+    let v = self.colored("┃", Color::DarkBlue);
 
     let mut lines = Vec::new();
     lines.push(format!(
       "{} Build Summary",
-      self.colored("━━━", Color::Blue)
+      self.colored("┏━━━", Color::DarkBlue)
     ));
 
+    let ic = self.ic();
     if completed > 0 || failed > 0 {
       let mut bp = Vec::new();
       if completed > 0 {
         bp.push(format!(
           "{} {completed} built",
-          self.colored("✔", Color::Green)
+          self.colored(ic.done, Color::DarkGreen)
         ));
       }
       if failed > 0 {
-        bp.push(format!("{} {failed} failed", self.colored("✗", Color::Red)));
+        bp.push(format!(
+          "{} {failed} failed",
+          self.colored(ic.failed, Color::DarkRed)
+        ));
       }
       lines.push(format!("{}  Builds:     {}", v, bp.join("  ")));
     }
@@ -378,14 +408,14 @@ impl<W: Write> Display<W> {
       lines.push(format!(
         "{}  Downloads:  {} fetched",
         v,
-        self.colored(&total_dl.to_string(), Color::Green)
+        self.colored(&total_dl.to_string(), Color::DarkGreen)
       ));
     }
     if total_ul > 0 {
       lines.push(format!(
         "{}  Uploads:    {} pushed",
         v,
-        self.colored(&total_ul.to_string(), Color::Green)
+        self.colored(&total_ul.to_string(), Color::DarkGreen)
       ));
     }
 
@@ -393,19 +423,19 @@ impl<W: Write> Display<W> {
       lines.push(format!(
         "{}  {} {} nix error(s)",
         v,
-        self.colored("⚠", Color::Red),
+        self.colored(ic.failed, Color::DarkRed),
         state.nix_errors.len()
       ));
     }
 
     let finish_label = if failed > 0 || !state.nix_errors.is_empty() {
-      self.colored(&format!("Exited at {at}"), Color::Red)
+      self.colored(&format!("Exited at {at}"), Color::DarkRed)
     } else {
-      self.colored(&format!("Finished at {at}"), Color::Green)
+      self.colored(&format!("Finished at {at}"), Color::DarkGreen)
     };
     lines.push(format!(
       "{} {} after {}",
-      self.colored("┗━", Color::Blue),
+      self.colored("┗━", Color::DarkBlue),
       finish_label,
       self.colored(&self.format_duration(duration), Color::DarkGrey),
     ));
@@ -437,31 +467,48 @@ impl<W: Write> Display<W> {
     }
 
     let duration = current_time() - state.start_time;
-    let prefix = if has_tree { "━" } else { "━" };
+    let ic = self.ic();
 
+    // Always emit ⏵ │ ✔ │ ⏸, dim zeros
     let mut parts: Vec<String> = Vec::new();
-    if running > 0 {
-      parts.push(format!("{} {running}", self.colored("⏵", Color::Yellow)));
-    }
-    if completed > 0 {
-      parts.push(format!("{} {completed}", self.colored("✔", Color::Green)));
-    }
-    if planned > 0 {
-      parts.push(format!("{} {planned}", self.colored("⏸", Color::Blue)));
-    }
+    parts.push(self.count_colored(ic.running, running, Color::DarkYellow));
+    parts.push(self.count_colored(ic.done, completed, Color::DarkGreen));
+    parts.push(self.count_colored(ic.planned, planned, Color::DarkBlue));
     if dl > 0 {
-      parts.push(format!("{} {dl}", self.colored("↓", Color::Yellow)));
+      parts.push(format!(
+        "{} {dl}",
+        self.colored(ic.download, Color::DarkYellow)
+      ));
     }
     if ul > 0 {
-      parts.push(format!("{} {ul}", self.colored("↑", Color::Yellow)));
+      parts.push(format!(
+        "{} {ul}",
+        self.colored(ic.upload, Color::DarkYellow)
+      ));
     }
-    parts.push(self.colored(&self.format_duration(duration), Color::DarkGrey));
-
-    vec![format!(
+    parts.push(format!(
       "{} {}",
-      self.colored(prefix, Color::Blue),
-      parts.join("  ")
-    )]
+      self.colored(ic.clock, Color::DarkGrey),
+      self.colored(&self.format_duration(duration), Color::DarkGrey),
+    ));
+
+    let header_prefix = if has_tree {
+      "┣━━━"
+    } else {
+      "┏━━━"
+    };
+    let mut lines = Vec::new();
+    lines.push(format!(
+      "{} Builds",
+      self.colored(header_prefix, Color::DarkBlue)
+    ));
+    lines.push(format!(
+      "{} {} {}",
+      self.colored("┗━", Color::DarkBlue),
+      self.colored(ic.summary, Color::DarkGrey),
+      parts.join(" │ ")
+    ));
+    lines
   }
 
   fn render_table_legend(&self, state: &State, has_tree: bool) -> Vec<String> {
@@ -471,30 +518,21 @@ impl<W: Write> Display<W> {
     let dl_running = state.full_summary.running_downloads.len();
     let dl_done = state.full_summary.completed_downloads.len();
     let ul_running = state.full_summary.running_uploads.len();
+    let ul_done = state.full_summary.completed_uploads.len();
 
     let show_builds = running + completed + planned > 0;
     let show_dl = dl_running + dl_done > 0;
-    let show_ul = ul_running > 0;
+    let show_ul = ul_running + ul_done > 0;
 
     if !show_builds && !show_dl && !show_ul {
       return vec![];
     }
 
-    let duration = current_time() - state.start_time;
+    let now = current_time();
+    let duration = now - state.start_time;
+    let v = self.colored("┃", Color::DarkBlue);
 
-    // Collect unique hosts from running builds to decide whether to show
-    // per-host rows
-    let mut host_set: std::collections::HashSet<String> =
-      std::collections::HashSet::new();
-    for b in state.full_summary.running_builds.values() {
-      host_set.insert(b.host.name().to_string());
-    }
-    for b in state.full_summary.completed_builds.values() {
-      host_set.insert(b.host.name().to_string());
-    }
-    let many_hosts = host_set.len() > 1;
-
-    // Build the header columns
+    // Build header section label(s)
     let mut header_parts: Vec<&str> = Vec::new();
     if show_builds {
       header_parts.push("Builds");
@@ -506,102 +544,181 @@ impl<W: Write> Display<W> {
       header_parts.push("Uploads");
     }
 
-    // Build summary counts for the ∑ row
-    let mut sum_parts: Vec<String> = Vec::new();
-    if show_builds {
-      let mut bp = Vec::new();
-      if running > 0 {
-        bp.push(format!("{} {running}", self.colored("⏵", Color::Yellow)));
-      }
-      if completed > 0 {
-        bp.push(format!("{} {completed}", self.colored("✔", Color::Green)));
-      }
-      if planned > 0 {
-        bp.push(format!("{} {planned}", self.colored("⏸", Color::Blue)));
-      }
-      if !bp.is_empty() {
-        sum_parts.push(bp.join(" "));
-      }
-    }
-    if show_dl {
-      let mut dp = Vec::new();
-      if dl_running > 0 {
-        dp.push(format!("{} {dl_running}", self.colored("↓", Color::Yellow)));
-      }
-      if dl_done > 0 {
-        dp.push(format!("{} {dl_done}", self.colored("↓", Color::Green)));
-      }
-      if !dp.is_empty() {
-        sum_parts.push(dp.join(" "));
-      }
-    }
-    if show_ul {
-      sum_parts
-        .push(format!("{} {ul_running}", self.colored("↑", Color::Yellow)));
-    }
-    sum_parts
-      .push(self.colored(&self.format_duration(duration), Color::DarkGrey));
-
     let mut lines = Vec::new();
 
-    // ━━━  [header cols], or ┣━━━ if following a tree
-    let header_sep = if has_tree {
+    // ┏━━━ header (or ┣━━━ when appended below a tree)
+    let header_prefix = if has_tree {
       "┣━━━"
     } else {
-      "━━━"
+      "┏━━━"
     };
     lines.push(format!(
       "{} {}",
-      self.colored(header_sep, Color::Blue),
+      self.colored(header_prefix, Color::DarkBlue),
       header_parts.join("  ")
     ));
 
-    // Per-host rows (only when multiple remote builders)
-    if many_hosts {
-      let mut hosts: Vec<String> = host_set.into_iter().collect();
-      hosts.sort();
-      for host in &hosts {
-        let mut row_parts: Vec<String> = Vec::new();
-        if show_builds {
-          let r = state
-            .full_summary
-            .running_builds
-            .values()
-            .filter(|b| b.host.name() == host)
-            .count();
-          let d = state
-            .full_summary
-            .completed_builds
-            .values()
-            .filter(|b| b.host.name() == host)
-            .count();
-          let mut bp = Vec::new();
-          if r > 0 {
-            bp.push(format!("{} {r}", self.colored("⏵", Color::Yellow)));
-          }
-          if d > 0 {
-            bp.push(format!("{} {d}", self.colored("✔", Color::Green)));
-          }
-          if !bp.is_empty() {
-            row_parts.push(bp.join(" "));
-          }
-        }
-        if !row_parts.is_empty() {
+    // Per-running-build rows
+    let mut running_entries: Vec<(String, f64, String)> = state
+      .full_summary
+      .running_builds
+      .iter()
+      .filter_map(|(drv_id, build)| {
+        let info = state.get_derivation_info(*drv_id)?;
+        let elapsed = now - build.start;
+        let host_label = match &build.host {
+          cognos::Host::Remote(h) => {
+            format!("  on {}", self.colored(h, Color::DarkMagenta))
+          },
+          _ => String::new(),
+        };
+        Some((info.name.name.clone(), elapsed, host_label))
+      })
+      .collect();
+    // Longest running first
+    running_entries.sort_by(|a, b| {
+      b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let dl_name_width = state
+      .full_summary
+      .running_downloads
+      .keys()
+      .filter_map(|id| {
+        state.store_path_infos.get(id).map(|pi| pi.name.name.len())
+      })
+      .max()
+      .unwrap_or(0);
+
+    let name_width = running_entries
+      .iter()
+      .map(|(n, ..)| n.len())
+      .chain(std::iter::once(dl_name_width))
+      .max()
+      .unwrap_or(0)
+      .min(48);
+
+    // Show per-item rows only when not already shown in the tree above.
+    // When has_tree=true the active builds are visible there; the legend
+    // only needs to supply the ∑ summary line.
+    if !has_tree {
+      let ic = self.ic();
+      for (name, elapsed, host_label) in &running_entries {
+        lines.push(format!(
+          "{}  {} {:<width$}  {} {}{}",
+          v,
+          self.colored(ic.running, Color::DarkYellow),
+          self.truncate_name(name, name_width),
+          self.colored(ic.clock, Color::DarkGrey),
+          self.colored(&self.format_duration(*elapsed), Color::DarkGrey),
+          host_label,
+          width = name_width,
+        ));
+      }
+
+      // Per-running-download rows
+      for (path_id, transfer) in &state.full_summary.running_downloads {
+        if let Some(pi) = state.store_path_infos.get(path_id) {
+          let elapsed = now - transfer.start;
+          let size_str = if let Some(total) = transfer.total_bytes {
+            self.format_bytes(transfer.bytes_transferred, total)
+          } else {
+            format!("{} B", transfer.bytes_transferred)
+          };
           lines.push(format!(
-            "{}  {} {}",
-            self.colored("┃", Color::Blue),
-            row_parts.join(" │ "),
-            self.colored(host, Color::Magenta),
+            "{}  {} {:<width$}  {} {} {}",
+            v,
+            self.colored(ic.download, Color::DarkYellow),
+            self.truncate_name(&pi.name.name, name_width),
+            self.colored(&size_str, Color::DarkGrey),
+            self.colored(ic.clock, Color::DarkGrey),
+            self.colored(&self.format_duration(elapsed), Color::DarkGrey),
+            width = name_width,
+          ));
+        }
+      }
+
+      // Per-running-upload rows
+      for (path_id, transfer) in &state.full_summary.running_uploads {
+        if let Some(pi) = state.store_path_infos.get(path_id) {
+          let elapsed = now - transfer.start;
+          lines.push(format!(
+            "{}  {} {:<width$}  {} {}",
+            v,
+            self.colored(ic.upload, Color::DarkYellow),
+            self.truncate_name(&pi.name.name, name_width),
+            self.colored(ic.clock, Color::DarkGrey),
+            self.colored(&self.format_duration(elapsed), Color::DarkGrey),
+            width = name_width,
           ));
         }
       }
     }
 
+    // ∑ row: always emit all three build-state columns (NOM behaviour —
+    // counts are shown even when zero, just dimmed to grey).
+    let ic = self.ic();
+    let mut sum_parts: Vec<String> = Vec::new();
+    if show_builds {
+      sum_parts.push(self.count_colored(
+        ic.running,
+        running,
+        Color::DarkYellow,
+      ));
+      sum_parts.push(self.count_colored(ic.done, completed, Color::DarkGreen));
+      sum_parts.push(self.count_colored(ic.planned, planned, Color::DarkBlue));
+    }
+    if show_dl {
+      // Two sub-columns: running (yellow) and done (green)
+      if dl_running > 0 || dl_done > 0 {
+        sum_parts.push(format!(
+          "{} {}",
+          self.colored(ic.download, Color::DarkGrey),
+          [
+            (dl_running > 0).then(|| {
+              self.count_colored(ic.running, dl_running, Color::DarkYellow)
+            }),
+            (dl_done > 0)
+              .then(|| self.count_colored(ic.done, dl_done, Color::DarkGreen)),
+          ]
+          .into_iter()
+          .flatten()
+          .collect::<Vec<_>>()
+          .join(" "),
+        ));
+      }
+    }
+    if show_ul {
+      if ul_running > 0 || ul_done > 0 {
+        sum_parts.push(format!(
+          "{} {}",
+          self.colored(ic.upload, Color::DarkGrey),
+          [
+            (ul_running > 0).then(|| {
+              self.count_colored(ic.running, ul_running, Color::DarkYellow)
+            }),
+            (ul_done > 0)
+              .then(|| self.count_colored(ic.done, ul_done, Color::DarkGreen)),
+          ]
+          .into_iter()
+          .flatten()
+          .collect::<Vec<_>>()
+          .join(" "),
+        ));
+      }
+    }
+    // Elapsed with clock icon
+    sum_parts.push(format!(
+      "{} {}",
+      self.colored(ic.clock, Color::DarkGrey),
+      self.colored(&self.format_duration(duration), Color::DarkGrey),
+    ));
+
     // ┗━ ∑  [summary]
-    let tail = if has_tree { "┗━" } else { "┗━" };
     lines.push(format!(
-      "{} ∑ {}",
-      self.colored(tail, Color::Blue),
+      "{} {} {}",
+      self.colored("┗━", Color::DarkBlue),
+      self.colored(ic.summary, Color::DarkGrey),
       sum_parts.join(" │ ")
     ));
 
@@ -628,12 +745,12 @@ impl<W: Write> Display<W> {
     let prefix = if has_tree {
       "┣━━━"
     } else {
-      "━━━"
+      "┏━━━"
     };
-    let v = self.colored("┃", Color::Blue);
+    let v = self.colored("┃", Color::DarkBlue);
 
     let mut lines = Vec::new();
-    lines.push(format!("{} Builds", self.colored(prefix, Color::Blue)));
+    lines.push(format!("{} Builds", self.colored(prefix, Color::DarkBlue)));
 
     // One row per running build: name left-aligned, time right
     let mut running_entries: Vec<(String, String, String)> = state
@@ -646,7 +763,7 @@ impl<W: Write> Display<W> {
         let host = match &build.host {
           cognos::Host::Localhost => String::new(),
           cognos::Host::Remote(h) => {
-            format!("  {}", self.colored(h, Color::Magenta))
+            format!("  {}", self.colored(h, Color::DarkMagenta))
           },
         };
         Some((info.name.name.clone(), self.format_duration(elapsed), host))
@@ -661,11 +778,12 @@ impl<W: Write> Display<W> {
       .unwrap_or(0)
       .min(48);
 
+    let ic = self.ic();
     for (name, elapsed, host) in &running_entries {
       lines.push(format!(
         "{}  {} {:<width$}  {}{}",
         v,
-        self.colored("⏵", Color::Yellow),
+        self.colored(ic.running, Color::DarkYellow),
         self.truncate_name(name, name_width),
         self.colored(elapsed, Color::DarkGrey),
         host,
@@ -685,7 +803,7 @@ impl<W: Write> Display<W> {
         lines.push(format!(
           "{}  {} {:<width$}  {} {}",
           v,
-          self.colored("↓", Color::Yellow),
+          self.colored(ic.download, Color::DarkYellow),
           self.truncate_name(&pi.name.name, name_width),
           self.colored(&size, Color::DarkGrey),
           self.colored(&self.format_duration(elapsed), Color::DarkGrey),
@@ -695,32 +813,34 @@ impl<W: Write> Display<W> {
     }
 
     // Summary line
+    let ic = self.ic();
     let mut sum_parts: Vec<String> = Vec::new();
-    if running > 0 {
-      sum_parts.push(format!("{} {running}", self.colored("⏵", Color::Yellow)));
-    }
-    if completed > 0 {
-      sum_parts
-        .push(format!("{} {completed}", self.colored("✔", Color::Green)));
-    }
-    if planned > 0 {
-      sum_parts.push(format!("{} {planned}", self.colored("⏸", Color::Blue)));
-    }
+    sum_parts.push(self.count_colored(ic.running, running, Color::DarkYellow));
+    sum_parts.push(self.count_colored(ic.done, completed, Color::DarkGreen));
+    sum_parts.push(self.count_colored(ic.planned, planned, Color::DarkBlue));
     if dl_running > 0 {
-      sum_parts
-        .push(format!("{} {dl_running}", self.colored("↓", Color::Yellow)));
+      sum_parts.push(format!(
+        "{} {dl_running}",
+        self.colored(ic.download, Color::DarkYellow)
+      ));
     }
     if ul_running > 0 {
-      sum_parts
-        .push(format!("{} {ul_running}", self.colored("↑", Color::Yellow)));
+      sum_parts.push(format!(
+        "{} {ul_running}",
+        self.colored(ic.upload, Color::DarkYellow)
+      ));
     }
-    sum_parts
-      .push(self.colored(&self.format_duration(duration), Color::DarkGrey));
+    sum_parts.push(format!(
+      "{} {}",
+      self.colored(ic.clock, Color::DarkGrey),
+      self.colored(&self.format_duration(duration), Color::DarkGrey),
+    ));
 
     lines.push(format!(
-      "{} ∑ {}",
-      self.colored("┗━", Color::Blue),
-      sum_parts.join("  ")
+      "{} {} {}",
+      self.colored("┗━", Color::DarkBlue),
+      self.colored(ic.summary, Color::DarkGrey),
+      sum_parts.join(" │ ")
     ));
 
     lines
@@ -753,6 +873,7 @@ impl<W: Write> Display<W> {
       .collect();
     builds.sort_by(|a, b| a.0.cmp(&b.0));
 
+    let ic = self.ic();
     for (name, build) in &builds {
       let elapsed = now - build.start;
       let mut suffix = String::new();
@@ -760,20 +881,20 @@ impl<W: Write> Display<W> {
         let remaining = est.saturating_sub(elapsed as u64);
         suffix = format!(
           "  {} {}",
-          self.colored("∅", Color::DarkGrey),
+          self.colored(ic.estimate, Color::DarkGrey),
           self
             .colored(&self.format_duration(remaining as f64), Color::DarkGrey)
         );
       }
       let host_label = match &build.host {
         cognos::Host::Remote(h) => {
-          format!("  {}", self.colored(h, Color::Magenta))
+          format!("  {}", self.colored(h, Color::DarkMagenta))
         },
         _ => String::new(),
       };
       lines.push(format!(
         "  {} {}  {}{}{}",
-        self.colored("⏵", Color::Yellow),
+        self.colored(ic.running, Color::DarkYellow),
         name,
         self.colored(&self.format_duration(elapsed), Color::DarkGrey),
         suffix,
@@ -791,7 +912,7 @@ impl<W: Write> Display<W> {
         };
         lines.push(format!(
           "  {} {}  {}",
-          self.colored("↓", Color::Yellow),
+          self.colored(ic.download, Color::DarkYellow),
           pi.name.name,
           self.colored(&size, Color::DarkGrey),
         ));
@@ -808,157 +929,273 @@ impl<W: Write> Display<W> {
         };
         lines.push(format!(
           "  {} {}  {}",
-          self.colored("↑", Color::Yellow),
+          self.colored(ic.upload, Color::DarkYellow),
           pi.name.name,
           self.colored(&size, Color::DarkGrey),
         ));
       }
     }
 
-    // Summary bar at the bottom
-    let mut parts: Vec<String> = Vec::new();
-    if running > 0 {
-      parts.push(format!("{} {running}", self.colored("⏵", Color::Yellow)));
-    }
-    if completed > 0 {
-      parts.push(format!("{} {completed}", self.colored("✔", Color::Green)));
-    }
-    if planned > 0 {
-      parts.push(format!("{} {planned}", self.colored("⏸", Color::Blue)));
-    }
+    let ic = self.ic();
+    let mut sum_cols: Vec<String> = Vec::new();
+    sum_cols.push(self.count_colored(ic.running, running, Color::DarkYellow));
+    sum_cols.push(self.count_colored(ic.done, completed, Color::DarkGreen));
+    sum_cols.push(self.count_colored(ic.planned, planned, Color::DarkBlue));
     if downloading > 0 {
-      parts.push(format!(
+      sum_cols.push(format!(
         "{} {downloading}",
-        self.colored("↓", Color::Yellow)
+        self.colored(ic.download, Color::DarkYellow)
       ));
     }
     if uploading > 0 {
-      parts.push(format!("{} {uploading}", self.colored("↑", Color::Yellow)));
+      sum_cols.push(format!(
+        "{} {uploading}",
+        self.colored(ic.upload, Color::DarkYellow)
+      ));
     }
-    parts.push(self.colored(&self.format_duration(duration), Color::DarkGrey));
+    sum_cols.push(format!(
+      "{} {}",
+      self.colored(ic.clock, Color::DarkGrey),
+      self.colored(&self.format_duration(duration), Color::DarkGrey),
+    ));
 
     lines.push(format!(
-      "{} {}",
-      self.colored("━", Color::Blue),
-      parts.join("  ")
+      "{} {} {}",
+      self.colored("┗━", Color::DarkBlue),
+      self.colored(ic.summary, Color::DarkGrey),
+      sum_cols.join(" │ ")
     ));
 
     lines
   }
 
   fn render_dashboard_view(&self, state: &State) -> Vec<String> {
+    let now = current_time();
+    let duration = now - state.start_time;
+    let running = state.full_summary.running_builds.len();
+    let completed = state.full_summary.completed_builds.len();
+    let planned = state.full_summary.planned_builds.len();
+    let failed = state.full_summary.failed_builds.len();
+    let dl = state.full_summary.running_downloads.len();
+    let ul = state.full_summary.running_uploads.len();
+
+    if running + completed + planned + failed + dl + ul == 0 {
+      return vec![];
+    }
+
+    let v = self.colored("┃", Color::DarkBlue);
     let mut lines = Vec::new();
 
-    // Get primary build (first root or first running build)
-    let primary_build = state
+    // Header row: primary target name if known
+    let title = state
       .forest_roots
       .first()
-      .and_then(|&id| state.get_derivation_info(id));
+      .and_then(|&id| state.get_derivation_info(id))
+      .map_or_else(|| "Build".to_string(), |info| info.name.name.clone());
+    lines.push(format!(
+      "{} {}  {}",
+      self.colored("┏━━━", Color::DarkBlue),
+      title,
+      self.colored(&self.format_duration(duration), Color::DarkGrey),
+    ));
 
-    if let Some(build_info) = primary_build {
-      let name = &build_info.name.name;
-      lines.push(format!("BUILD GRAPH: {name}"));
-      lines.push("─".repeat(44));
+    // Running builds
+    let mut running_entries: Vec<(String, f64, String)> = state
+      .full_summary
+      .running_builds
+      .iter()
+      .filter_map(|(drv_id, build)| {
+        let info = state.get_derivation_info(*drv_id)?;
+        let elapsed = now - build.start;
+        let host = match &build.host {
+          cognos::Host::Remote(h) => {
+            format!(" on {}", self.colored(h, Color::DarkMagenta))
+          },
+          _ => String::new(),
+        };
+        Some((info.name.name.clone(), elapsed, host))
+      })
+      .collect();
+    running_entries.sort_by(|a, b| {
+      b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
+    });
 
-      // Get host information from running/completed builds
-      let host = if let Some((_, build)) =
-        state.full_summary.running_builds.iter().next()
-      {
-        build.host.name()
-      } else if let Some((_, build)) =
-        state.full_summary.completed_builds.iter().next()
-      {
-        build.host.name()
-      } else {
-        "localhost"
-      };
-
-      // Determine status
-      let running = state.full_summary.running_builds.len();
-      let completed = state.full_summary.completed_builds.len();
-      let failed = state.full_summary.failed_builds.len();
-
-      let status = if running > 0 {
-        format!("{} building", self.colored("⏵", Color::Yellow))
-      } else if failed > 0 {
-        format!("{} failed", self.colored("✗", Color::Red))
-      } else if completed > 0 {
-        format!("{} success", self.colored("✔", Color::Green))
-      } else {
-        format!("{} planned", self.colored("⏸", Color::Grey))
-      };
-
-      // Duration
-      let duration = current_time() - state.start_time;
-
-      // Format dashboard
-      lines.push(format!("Host        │ {host}"));
-      lines.push(format!("Status      │ {status}"));
-      lines.push(format!("Duration    │ {}", self.format_duration(duration)));
-      lines.push("─".repeat(44));
-
-      // Summary stats
-      let total_jobs = running + completed + failed;
+    let ic = self.ic();
+    for (name, elapsed, host) in &running_entries {
       lines.push(format!(
-        "Summary     │ jobs={}  ok={}  failed={}  total={}",
-        total_jobs,
-        completed,
-        failed,
-        self.format_duration(duration)
+        "{}  {} {}  {} {}{}",
+        v,
+        self.colored(ic.running, Color::DarkYellow),
+        self.truncate_name(name, 48),
+        self.colored(ic.clock, Color::DarkGrey),
+        self.colored(&self.format_duration(*elapsed), Color::DarkGrey),
+        host,
       ));
     }
+
+    // Running downloads
+    for (path_id, transfer) in &state.full_summary.running_downloads {
+      if let Some(pi) = state.store_path_infos.get(path_id) {
+        let elapsed = now - transfer.start;
+        let size_str = if let Some(total) = transfer.total_bytes {
+          self.format_bytes(transfer.bytes_transferred, total)
+        } else {
+          format!("{} B", transfer.bytes_transferred)
+        };
+        lines.push(format!(
+          "{}  {} {}  {} {} {}",
+          v,
+          self.colored(ic.download, Color::DarkYellow),
+          self.truncate_name(&pi.name.name, 48),
+          self.colored(&size_str, Color::DarkGrey),
+          self.colored(ic.clock, Color::DarkGrey),
+          self.colored(&self.format_duration(elapsed), Color::DarkGrey),
+        ));
+      }
+    }
+
+    // Summary footer
+    let mut sum: Vec<String> = Vec::new();
+    sum.push(self.count_colored(ic.running, running, Color::DarkYellow));
+    sum.push(self.count_colored(ic.done, completed, Color::DarkGreen));
+    sum.push(self.count_colored(ic.planned, planned, Color::DarkBlue));
+    if failed > 0 {
+      sum.push(format!(
+        "{} {failed}",
+        self.colored(ic.failed, Color::DarkRed)
+      ));
+    }
+    if dl > 0 {
+      sum.push(format!(
+        "{} {dl}",
+        self.colored(ic.download, Color::DarkYellow)
+      ));
+    }
+    if ul > 0 {
+      sum.push(format!(
+        "{} {ul}",
+        self.colored(ic.upload, Color::DarkYellow)
+      ));
+    }
+    lines.push(format!(
+      "{} {} {}",
+      self.colored("┗━", Color::DarkBlue),
+      self.colored(ic.summary, Color::DarkGrey),
+      sum.join(" │ "),
+    ));
 
     lines
   }
 
   fn render_dashboard_final(&self, state: &State) -> Vec<String> {
+    let duration = current_time() - state.start_time;
+    let completed = state.full_summary.completed_builds.len();
+    let failed = state.full_summary.failed_builds.len();
+    let dl_done = state.full_summary.completed_downloads.len();
+    let ul_done = state.full_summary.completed_uploads.len();
+    let now = chrono::Local::now();
+    let at = now.format("%H:%M:%S");
+
+    let v = self.colored("┃", Color::DarkBlue);
     let mut lines = Vec::new();
 
-    // Get primary build
-    let primary_build = state
+    let title = state
       .forest_roots
       .first()
-      .and_then(|&id| state.get_derivation_info(id));
+      .and_then(|&id| state.get_derivation_info(id))
+      .map_or_else(|| "Build".to_string(), |info| info.name.name.clone());
 
-    if let Some(build_info) = primary_build {
-      let name = &build_info.name.name;
-      lines.push(format!("BUILD GRAPH: {name}"));
-      lines.push("─".repeat(44));
-
-      let host = state
-        .full_summary
-        .completed_builds
-        .values()
-        .next()
-        .map_or("localhost", |b| b.host.name());
-
-      let completed = state.full_summary.completed_builds.len();
-      let failed = state.full_summary.failed_builds.len();
-
-      let status = if failed > 0 {
-        format!("{} failed", self.colored("✗", Color::Red))
-      } else if completed > 0 {
-        format!("{} success", self.colored("✔", Color::Green))
+    let ic = self.ic();
+    let (finish_color, finish_label) =
+      if failed > 0 || !state.nix_errors.is_empty() {
+        (Color::DarkRed, format!("{}  Failed at {at}", ic.failed))
       } else {
-        "unknown".to_string()
+        (Color::DarkGreen, format!("{}  Finished at {at}", ic.done))
       };
 
-      let duration = current_time() - state.start_time;
+    lines.push(format!(
+      "{} {}  {} {}",
+      self.colored("┏━━━", Color::DarkBlue),
+      title,
+      self.colored(ic.clock, Color::DarkGrey),
+      self.colored(&self.format_duration(duration), Color::DarkGrey),
+    ));
+    lines.push(format!(
+      "{}  {}",
+      v,
+      self.colored(&finish_label, finish_color),
+    ));
 
-      lines.push(format!("Host        │ {host}"));
-      lines.push(format!("Status      │ {status}"));
-      lines.push(format!("Duration    │ {}", self.format_duration(duration)));
-      lines.push("─".repeat(44));
+    // Show per-host breakdown
+    let mut host_map: std::collections::HashMap<String, (usize, usize)> =
+      std::collections::HashMap::new();
+    for b in state.full_summary.completed_builds.values() {
+      host_map.entry(b.host.name().to_string()).or_default().0 += 1;
+    }
+    for b in state.full_summary.failed_builds.values() {
+      host_map.entry(b.host.name().to_string()).or_default().1 += 1;
+    }
+    if host_map.len() > 1 {
+      let mut hosts: Vec<_> = host_map.keys().cloned().collect();
+      hosts.sort();
+      for host in &hosts {
+        let (ok, fail) = host_map[host];
+        let mut hp = Vec::new();
+        if ok > 0 {
+          hp.push(format!("{} {ok}", self.colored(ic.done, Color::DarkGreen)));
+        }
+        if fail > 0 {
+          hp.push(format!(
+            "{} {fail}",
+            self.colored(ic.failed, Color::DarkRed)
+          ));
+        }
+        lines.push(format!(
+          "{}  {}  {}",
+          v,
+          hp.join("  "),
+          self.colored(host, Color::DarkMagenta),
+        ));
+      }
+    }
 
-      let total_jobs = completed + failed;
-      lines.push(format!(
-        "Summary     │ jobs={}  ok={}  failed={}  total={}",
-        total_jobs,
-        completed,
-        failed,
-        self.format_duration(duration)
+    // ∑ summary
+    let mut sum: Vec<String> = Vec::new();
+    if completed > 0 {
+      sum.push(format!(
+        "{} {completed}",
+        self.colored(ic.done, Color::DarkGreen)
       ));
     }
+    if failed > 0 {
+      sum.push(format!(
+        "{} {failed}",
+        self.colored(ic.failed, Color::DarkRed)
+      ));
+    }
+    if dl_done > 0 {
+      sum.push(format!(
+        "{} {dl_done}",
+        self.colored(ic.download, Color::DarkGreen)
+      ));
+    }
+    if ul_done > 0 {
+      sum.push(format!(
+        "{} {ul_done}",
+        self.colored(ic.upload, Color::DarkGreen)
+      ));
+    }
+    sum.push(format!(
+      "{} {}",
+      self.colored(ic.clock, Color::DarkGrey),
+      self.colored(&self.format_duration(duration), Color::DarkGrey),
+    ));
+    lines.push(format!(
+      "{} {} {}",
+      self.colored("┗━", Color::DarkBlue),
+      self.colored(ic.summary, Color::DarkGrey),
+      sum.join(" │ "),
+    ));
 
     lines
   }
@@ -996,7 +1233,7 @@ impl<W: Write> Display<W> {
     // Add header as first line
     lines.push(format!(
       "{} Dependency Graph:",
-      self.colored("┏━", Color::Blue)
+      self.colored("┏━", Color::DarkBlue)
     ));
 
     // Render each root with its tree
@@ -1078,7 +1315,7 @@ impl<W: Write> Display<W> {
 
     // Then render the root node at bottom
     let mut line = String::new();
-    line.push_str(&self.colored("┃ ", Color::Blue));
+    line.push_str(&self.colored("┃ ", Color::DarkBlue));
 
     // Status icon
     let (icon, color) = self.get_status_icon(&info.build_status);
@@ -1100,18 +1337,23 @@ impl<W: Write> Display<W> {
       // Time information
       let elapsed = current_time() - build_info.start;
 
+      let ic = self.ic();
       // Show estimate if available
       if let Some(estimate_secs) = build_info.estimate {
         let remaining = estimate_secs.saturating_sub(elapsed as u64);
         line.push_str(&self.colored(
-          &format!(" ∅ {}", self.format_duration(remaining as f64)),
+          &format!(
+            " {} {}",
+            ic.estimate,
+            self.format_duration(remaining as f64)
+          ),
           Color::DarkGrey,
         ));
       }
 
       // Show elapsed time
       line.push_str(&self.colored(
-        &format!(" ⏱ {}", self.format_duration(elapsed)),
+        &format!(" {} {}", ic.clock, self.format_duration(elapsed)),
         Color::DarkGrey,
       ));
     }
@@ -1149,24 +1391,40 @@ impl<W: Write> Display<W> {
     line.push_str(prefix);
 
     let connector = if is_last_child { "└─ " } else { "├─ " };
-    line.push_str(&self.colored(connector, Color::Blue));
+    line.push_str(&self.colored(connector, Color::DarkBlue));
 
     let (icon, color) = self.get_status_icon(&info.build_status);
     line.push_str(&self.colored(icon, color));
     line.push(' ');
-    line.push_str(&self.truncate_name(&info.name.name, 50));
+    line.push_str(&self.truncate_name(&info.name.name, 48));
+
+    // Show elapsed time for active children
+    if let BuildStatus::Building(build_info) = &info.build_status {
+      let elapsed = current_time() - build_info.start;
+      let ic = self.ic();
+      line.push_str(&self.colored(
+        &format!("  {} {}", ic.clock, self.format_duration(elapsed)),
+        Color::DarkGrey,
+      ));
+    }
 
     lines.push(line);
   }
 
-  const fn get_status_icon(&self, status: &BuildStatus) -> (&str, Color) {
+  fn get_status_icon(&self, status: &BuildStatus) -> (&'static str, Color) {
+    let ic = self.ic();
     match status {
-      BuildStatus::Building(_) => ("⏵", Color::Yellow),
-      BuildStatus::Planned => ("⏸", Color::Grey),
-      BuildStatus::Built { .. } => ("✔", Color::Green),
-      BuildStatus::Failed { .. } => ("✗", Color::Red),
+      BuildStatus::Building(_) => (ic.running, Color::DarkYellow),
+      BuildStatus::Planned => (ic.planned, Color::DarkBlue),
+      BuildStatus::Built { .. } => (ic.done, Color::DarkGreen),
+      BuildStatus::Failed { .. } => (ic.failed, Color::DarkRed),
       BuildStatus::Unknown => ("?", Color::Grey),
     }
+  }
+
+  /// Shorthand accessor for the configured icon set.
+  fn ic(&self) -> &'static Icons {
+    self.config.icons
   }
 
   fn colored(&self, text: &str, color: Color) -> String {
@@ -1175,6 +1433,18 @@ impl<W: Write> Display<W> {
     } else {
       text.to_string()
     }
+  }
+
+  /// Render an icon + count matching NOM's `nonZeroBold` semantics:
+  /// the icon keeps its active colour always; the number is bold when > 0.
+  fn count_colored(&self, icon: &str, n: usize, active_color: Color) -> String {
+    let icon_s = self.colored(icon, active_color);
+    let num_s = if n > 0 && self.config.use_color {
+      format!("\x1b[1m{n}\x1b[0m")
+    } else {
+      n.to_string()
+    };
+    format!("{icon_s} {num_s}")
   }
 
   pub fn format_duration(&self, secs: f64) -> String {
