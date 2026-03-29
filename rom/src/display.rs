@@ -1,7 +1,6 @@
 //! Display rendering for ROM
-
 use std::{
-  collections::{HashMap, HashSet},
+  collections::HashSet,
   io::{self, Write},
 };
 
@@ -11,7 +10,10 @@ use crossterm::{
   style::{Color, ResetColor, SetForegroundColor},
 };
 
-use crate::state::{BuildStatus, DerivationId, State, current_time};
+use crate::{
+  state::{BuildStatus, DerivationId, State, current_time},
+  types::{LegendStyle, SummaryStyle},
+};
 
 /// Format a duration in seconds to a human-readable string
 #[must_use]
@@ -23,20 +25,6 @@ pub fn format_duration(secs: f64) -> String {
   } else {
     format!("{:.0}h{:.0}m", secs / 3600.0, (secs % 3600.0) / 60.0)
   }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LegendStyle {
-  Compact,
-  Table,
-  Verbose,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SummaryStyle {
-  Concise,
-  Table,
-  Full,
 }
 
 pub struct DisplayConfig {
@@ -64,91 +52,94 @@ impl Default for DisplayConfig {
 }
 
 pub struct Display<W: Write> {
-  writer:     W,
-  config:     DisplayConfig,
-  last_lines: usize,
+  writer:            W,
+  config:            DisplayConfig,
+  /// Number of graph lines printed in the last render (cleared on next render)
+  last_lines:        usize,
+  /// Total log lines already printed (they scroll naturally, never cleared)
+  printed_log_lines: usize,
 }
 
 struct TreeNode {
   drv_id:   DerivationId,
-  children: Vec<TreeNode>,
+  children: Vec<Self>,
 }
 
 impl<W: Write> Display<W> {
-  pub fn new(writer: W, config: DisplayConfig) -> io::Result<Self> {
+  pub const fn new(writer: W, config: DisplayConfig) -> io::Result<Self> {
     Ok(Self {
       writer,
       config,
       last_lines: 0,
+      printed_log_lines: 0,
     })
   }
 
   pub fn clear_previous(&mut self) -> io::Result<()> {
-    // Move cursor up and clear each line like NOM does
     if self.last_lines > 0 {
-      // Save current position by moving to start of line
-      execute!(self.writer, cursor::MoveToColumn(0))?;
-
-      // Move up to the first line we printed
-      for _ in 0..self.last_lines {
-        execute!(self.writer, cursor::MoveUp(1))?;
-      }
-
-      // Clear from cursor to end of screen
+      // Move up in a single escape sequence, then clear to end of screen.
+      // This is much cheaper than calling MoveUp(1) in a loop because it
+      // produces one write + one flush instead of N.
       execute!(
         self.writer,
+        cursor::MoveToColumn(0),
+        cursor::MoveUp(self.last_lines as u16),
         cursor::MoveToColumn(0),
         crossterm::terminal::Clear(
           crossterm::terminal::ClearType::FromCursorDown
         )
       )?;
-
-      // Don't flush here - let render() handle it after printing
     }
     Ok(())
   }
 
   pub fn render(&mut self, state: &State, logs: &[String]) -> io::Result<()> {
-    // Clear previous output first
-    self.clear_previous()?;
-
-    let mut lines = Vec::new();
-
-    // Print build logs ABOVE the graph
-    for log in logs {
-      lines.push(log.clone());
+    // Print any log lines that arrived since last render.
+    // These are printed once and scroll up naturally, we never clear them.
+    let new_logs = &logs[self.printed_log_lines.min(logs.len())..];
+    if !new_logs.is_empty() {
+      // Clear the current graph first so new logs appear above it
+      self.clear_previous()?;
+      let mut log_out = String::with_capacity(new_logs.len() * 80);
+      for line in new_logs {
+        log_out.push_str(line);
+        log_out.push('\n');
+      }
+      self.writer.write_all(log_out.as_bytes())?;
+      self.printed_log_lines = logs.len();
+      self.last_lines = 0; // graph was cleared above
     }
 
-    // Render based on format
-    match self.config.format {
+    // Clear only the graph from the previous render
+    self.clear_previous()?;
+
+    // Build graph lines
+    let mut graph_lines = match self.config.format {
       crate::types::DisplayFormat::Tree => {
         let tree_lines = self.render_tree_view(state);
         let has_tree = !tree_lines.is_empty();
-        let legend_lines = self.render_legend(state, has_tree);
-
-        // Tree and legend come pre-formatted with headers and frames
-        lines.extend(tree_lines);
-        lines.extend(legend_lines);
+        let mut g = tree_lines;
+        g.extend(self.render_legend(state, has_tree));
+        g
       },
-      crate::types::DisplayFormat::Plain => {
-        // Plain format - show flat list view
-        lines.extend(self.render_plain_view(state));
-      },
+      crate::types::DisplayFormat::Plain => self.render_plain_view(state),
       crate::types::DisplayFormat::Dashboard => {
-        // Dashboard format - show summary dashboard
-        lines.extend(self.render_dashboard_view(state));
+        self.render_dashboard_view(state)
       },
+    };
+
+    if graph_lines.len() > self.config.max_visible_lines {
+      graph_lines.truncate(self.config.max_visible_lines);
     }
 
-    // Track how many lines we're printing
-    self.last_lines = lines.len();
+    self.last_lines = graph_lines.len();
 
-    // Print all lines
-    for line in lines {
-      writeln!(self.writer, "{line}")?;
+    let mut out = String::with_capacity(graph_lines.len() * 80);
+    for line in &graph_lines {
+      out.push_str(line);
+      out.push('\n');
     }
-
-    // Flush to ensure output is visible
+    self.writer.write_all(out.as_bytes())?;
     self.writer.flush()
   }
 
@@ -163,14 +154,10 @@ impl<W: Write> Display<W> {
     // Render final output based on format
     match self.config.format {
       crate::types::DisplayFormat::Tree => {
+        // render_tree_view already includes its own header line; only extend if
+        // there are actually active (building/failed) derivations to show
         let tree_lines = self.render_tree_view(state);
-        if !tree_lines.is_empty() {
-          lines.push(format!(
-            "{} Dependency Graph:",
-            self.colored("┏━", Color::Blue)
-          ));
-          lines.extend(tree_lines);
-        }
+        lines.extend(tree_lines);
         lines.extend(self.render_final_summary(state));
       },
       crate::types::DisplayFormat::Plain => {
@@ -197,260 +184,231 @@ impl<W: Write> Display<W> {
 
   fn render_final_summary(&self, state: &State) -> Vec<String> {
     match self.config.summary_style {
-      SummaryStyle::Concise => self.render_concise_summary(state),
+      SummaryStyle::Concise => self.render_finished_line(state),
       SummaryStyle::Table => self.render_table_summary(state),
       SummaryStyle::Full => self.render_full_summary(state),
     }
   }
 
-  fn render_concise_summary(&self, state: &State) -> Vec<String> {
-    let mut lines = Vec::new();
-
-    let running = state.full_summary.running_builds.len();
-    let completed = state.full_summary.completed_builds.len();
+  /// Final single-line summary. Matches NOM's finish markup:
+  /// - success:  `Finished at HH:MM:SS after Xs  ✔ N`
+  /// - failure:  `⚠ Exited after N build failures at HH:MM:SS after Xs`
+  /// - errors:   `⚠ Exited with N nix errors at HH:MM:SS after Xs`
+  fn render_finished_line(&self, state: &State) -> Vec<String> {
     let failed = state.full_summary.failed_builds.len();
-    let planned = state.full_summary.planned_builds.len();
-
+    let completed = state.full_summary.completed_builds.len();
+    let nix_errors = state.nix_errors.len();
     let duration = current_time() - state.start_time;
+    let now = chrono::Local::now();
+    let at = now.format("%H:%M:%S");
+    let dur = self.format_duration(duration);
 
-    // Always print summary (like NOM's "Finished at HH:MM:SS after Xs")
-    if running > 0 || completed > 0 || failed > 0 || planned > 0 {
-      lines.push(format!(
-        "{} {} {} │ {} {} │ {} {} │ {} {} │ {} {}",
-        self.colored("━", Color::Blue),
-        self.colored("⏵", Color::Yellow),
-        running,
-        self.colored("✔", Color::Green),
-        completed,
-        self.colored("✗", Color::Red),
-        failed,
-        self.colored("⏸", Color::Grey),
-        planned,
-        self.colored("⏱", Color::Grey),
-        self.format_duration(duration)
-      ));
+    let line = if failed > 0 {
+      let noun = if failed == 1 { "failure" } else { "failures" };
+      format!(
+        "{} {} at {} after {}",
+        self.colored("⚠", Color::Red),
+        self
+          .colored(&format!("Exited after {failed} build {noun}"), Color::Red),
+        self.colored(&at.to_string(), Color::Red),
+        self.colored(&dur, Color::Red),
+      )
+    } else if nix_errors > 0 {
+      let noun = if nix_errors == 1 { "error" } else { "errors" };
+      format!(
+        "{} {} at {} after {}",
+        self.colored("⚠", Color::Red),
+        self
+          .colored(&format!("Exited with {nix_errors} nix {noun}"), Color::Red),
+        self.colored(&at.to_string(), Color::Red),
+        self.colored(&dur, Color::Red),
+      )
     } else {
-      // Nothing built - just show "Finished after Xs"
-      let now = chrono::Local::now();
-      let time_str = now.format("%H:%M:%S");
-      lines.push(format!(
-        "{} {}",
-        self.colored(&format!("Finished at {time_str}"), Color::Green),
-        self.colored(
-          &format!("after {}", self.format_duration(duration)),
-          Color::Green
-        )
-      ));
-    }
+      let mut s = format!(
+        "{} after {}",
+        self.colored(&format!("Finished at {at}"), Color::Green),
+        self.colored(&dur, Color::Green),
+      );
+      if completed > 0 {
+        s.push_str(&format!(
+          "  {}",
+          self.colored(&format!("✔ {completed}"), Color::Green)
+        ));
+      }
+      s
+    };
 
-    lines
+    vec![line]
   }
 
   fn render_table_summary(&self, state: &State) -> Vec<String> {
-    let mut lines = Vec::new();
-
-    let running = state.full_summary.running_builds.len();
     let completed = state.full_summary.completed_builds.len();
     let failed = state.full_summary.failed_builds.len();
-    let planned = state.full_summary.planned_builds.len();
-    let downloading = state.full_summary.running_downloads.len();
-    let uploading = state.full_summary.running_uploads.len();
+    let dl_done = state.full_summary.completed_downloads.len();
+    let ul_done = state.full_summary.completed_uploads.len();
+    let duration = current_time() - state.start_time;
+    let now = chrono::Local::now();
+    let at = now.format("%H:%M:%S");
+    let dur = self.format_duration(duration);
 
-    if running > 0
-      || completed > 0
-      || failed > 0
-      || planned > 0
-      || downloading > 0
-      || uploading > 0
-    {
-      // Group builds by host
-      let mut host_builds: std::collections::HashMap<
-        String,
-        (usize, usize, usize),
-      > = std::collections::HashMap::new();
-
-      for build in state.full_summary.running_builds.values() {
-        let host = build.host.name().to_string();
-        let entry = host_builds.entry(host).or_insert((0, 0, 0));
-        entry.0 += 1;
-      }
-
-      for build in state.full_summary.completed_builds.values() {
-        let host = build.host.name().to_string();
-        let entry = host_builds.entry(host).or_insert((0, 0, 0));
-        entry.1 += 1;
-      }
-
-      for build in state.full_summary.failed_builds.values() {
-        let host = build.host.name().to_string();
-        let entry = host_builds.entry(host).or_insert((0, 0, 0));
-        entry.2 += 1;
-      }
-
-      // Group downloads/uploads by host
-      let mut host_transfers: std::collections::HashMap<
-        String,
-        (usize, usize),
-      > = std::collections::HashMap::new();
-
-      for transfer in state.full_summary.running_downloads.values() {
-        let host = transfer.host.name().to_string();
-        let entry = host_transfers.entry(host).or_insert((0, 0));
-        entry.0 += 1;
-      }
-
-      for transfer in state.full_summary.running_uploads.values() {
-        let host = transfer.host.name().to_string();
-        let entry = host_transfers.entry(host).or_insert((0, 0));
-        entry.1 += 1;
-      }
-
-      // Header
-      if !host_builds.is_empty() || !host_transfers.is_empty() {
-        lines.push(format!(
-          "{} Builds          │ Host",
-          self.colored("┏━━━", Color::Blue)
-        ));
-
-        // Show builds by host
-        for (host, (run, done, fail)) in &host_builds {
-          let mut parts = Vec::new();
-          if *run > 0 {
-            parts.push(format!("{} {}", self.colored("⏵", Color::Yellow), run));
-          }
-          if *done > 0 {
-            parts.push(format!("{} {}", self.colored("✔", Color::Green), done));
-          }
-          if *fail > 0 {
-            parts.push(format!("{} {}", self.colored("✗", Color::Red), fail));
-          }
-
-          let status = if parts.is_empty() {
-            "       ".to_string()
-          } else {
-            parts.join(" │ ")
-          };
-
-          lines.push(format!(
-            "{} {:14} │ {}",
-            self.colored("┃", Color::Blue),
-            status,
-            host
-          ));
-        }
-
-        // Show downloads by host
-        for (host, (down, up)) in &host_transfers {
-          let mut parts = Vec::new();
-          if *down > 0 {
-            parts.push(format!("{} {}", self.colored("↓", Color::Blue), down));
-          }
-          if *up > 0 {
-            parts.push(format!("{} {}", self.colored("↑", Color::Green), up));
-          }
-
-          let status = if parts.is_empty() {
-            "       ".to_string()
-          } else {
-            parts.join(" │ ")
-          };
-
-          lines.push(format!(
-            "{} {:14} │ {}",
-            self.colored("┃", Color::Blue),
-            status,
-            host
-          ));
-        }
-      }
-
-      // Summary line
-      let duration = current_time() - state.start_time;
-
-      lines.push(format!(
-        "{} ∑ {} {} │ {} {} │ {} {} │ Finished after {}",
-        self.colored("━", Color::Blue),
-        self.colored("↓", Color::Blue),
-        downloading,
-        self.colored("↑", Color::Green),
-        uploading,
-        self.colored("⏸", Color::Grey),
-        planned,
-        self.format_duration(duration)
-      ));
+    if completed + failed + dl_done + ul_done == 0 {
+      return self.render_finished_line(state);
     }
+
+    // Collect host breakdown
+    let mut host_map: std::collections::HashMap<String, (usize, usize)> =
+      std::collections::HashMap::new();
+    for b in state.full_summary.completed_builds.values() {
+      host_map.entry(b.host.name().to_string()).or_default().0 += 1;
+    }
+    for b in state.full_summary.failed_builds.values() {
+      host_map.entry(b.host.name().to_string()).or_default().1 += 1;
+    }
+    let many_hosts = host_map.len() > 1;
+
+    let mut lines = Vec::new();
+
+    // Header
+    let mut hdr_parts = Vec::new();
+    if completed + failed > 0 {
+      hdr_parts.push("Builds");
+    }
+    if dl_done > 0 {
+      hdr_parts.push("Downloads");
+    }
+    if ul_done > 0 {
+      hdr_parts.push("Uploads");
+    }
+    lines.push(format!(
+      "{} {}",
+      self.colored("━━━", Color::Blue),
+      hdr_parts.join("  ")
+    ));
+
+    // Per-host rows when multiple hosts
+    if many_hosts {
+      let mut hosts: Vec<_> = host_map.keys().cloned().collect();
+      hosts.sort();
+      for host in &hosts {
+        let (done, fail) = host_map[host];
+        let mut parts = Vec::new();
+        if done > 0 {
+          parts.push(format!("{} {done}", self.colored("✔", Color::Green)));
+        }
+        if fail > 0 {
+          parts.push(format!("{} {fail}", self.colored("✗", Color::Red)));
+        }
+        lines.push(format!(
+          "{}  {}  {}",
+          self.colored("┃", Color::Blue),
+          parts.join("  "),
+          self.colored(host, Color::Magenta),
+        ));
+      }
+    }
+
+    // Final ∑ line
+    let mut sum_parts = Vec::new();
+    if completed > 0 {
+      sum_parts
+        .push(format!("{} {completed}", self.colored("✔", Color::Green)));
+    }
+    if failed > 0 {
+      sum_parts.push(format!("{} {failed}", self.colored("✗", Color::Red)));
+    }
+    if dl_done > 0 {
+      sum_parts.push(format!("{} {dl_done}", self.colored("↓", Color::Green)));
+    }
+    if ul_done > 0 {
+      sum_parts.push(format!("{} {ul_done}", self.colored("↑", Color::Green)));
+    }
+
+    let finish = if failed > 0 || !state.nix_errors.is_empty() {
+      self.colored(&format!("Exited at {at} after {dur}"), Color::Red)
+    } else {
+      self.colored(&format!("Finished at {at} after {dur}"), Color::Green)
+    };
+    sum_parts.push(finish);
+
+    lines.push(format!(
+      "{} ∑ {}",
+      self.colored("┗━", Color::Blue),
+      sum_parts.join("  │  ")
+    ));
 
     lines
   }
 
   fn render_full_summary(&self, state: &State) -> Vec<String> {
-    let mut lines = Vec::new();
-
-    let running = state.full_summary.running_builds.len();
     let completed = state.full_summary.completed_builds.len();
     let failed = state.full_summary.failed_builds.len();
-    let planned = state.full_summary.planned_builds.len();
-    let downloading = state.full_summary.running_downloads.len();
-    let uploading = state.full_summary.running_uploads.len();
+    let dl_done = state.full_summary.completed_downloads.len();
+    let dl_running = state.full_summary.running_downloads.len();
+    let ul_done = state.full_summary.completed_uploads.len();
+    let ul_running = state.full_summary.running_uploads.len();
+    let duration = current_time() - state.start_time;
+    let now = chrono::Local::now();
+    let at = now.format("%H:%M:%S");
 
-    if running > 0
-      || completed > 0
-      || failed > 0
-      || planned > 0
-      || downloading > 0
-      || uploading > 0
-    {
-      lines.push(self.colored(&"═".repeat(60), Color::Blue).clone());
-      lines.push(format!("{} Build Summary", self.colored("┃", Color::Blue)));
-      lines.push(self.colored(&"─".repeat(60), Color::Blue).clone());
+    let v = self.colored("┃", Color::Blue);
 
-      // Builds section
-      if running + completed + failed > 0 {
-        lines.push(format!(
-          "{} Builds:        {} {} running  {} {} completed  {} {} failed",
-          self.colored("┃", Color::Blue),
-          self.colored("⏵", Color::Yellow),
-          running,
-          self.colored("✔", Color::Green),
-          completed,
-          self.colored("✗", Color::Red),
-          failed
+    let mut lines = Vec::new();
+    lines.push(format!(
+      "{} Build Summary",
+      self.colored("━━━", Color::Blue)
+    ));
+
+    if completed > 0 || failed > 0 {
+      let mut bp = Vec::new();
+      if completed > 0 {
+        bp.push(format!(
+          "{} {completed} built",
+          self.colored("✔", Color::Green)
         ));
       }
-
-      // Planned section
-      if planned > 0 {
-        lines.push(format!(
-          "{} Planned:       {} {} waiting",
-          self.colored("┃", Color::Blue),
-          self.colored("⏸", Color::Grey),
-          planned
-        ));
+      if failed > 0 {
+        bp.push(format!("{} {failed} failed", self.colored("✗", Color::Red)));
       }
-
-      // Transfers section
-      if downloading + uploading > 0 {
-        lines.push(format!(
-          "{} Transfers:     {} {} downloading  {} {} uploading",
-          self.colored("┃", Color::Blue),
-          self.colored("↓", Color::Blue),
-          downloading,
-          self.colored("↑", Color::Green),
-          uploading
-        ));
-      }
-
-      // Duration
-      let duration = current_time() - state.start_time;
-      lines.push(format!(
-        "{} Duration:      {} {}",
-        self.colored("┃", Color::Blue),
-        self.colored("⏱", Color::Grey),
-        self.format_duration(duration)
-      ));
-
-      lines.push(self.colored(&"═".repeat(60), Color::Blue).clone());
+      lines.push(format!("{}  Builds:     {}", v, bp.join("  ")));
     }
+
+    let total_dl = dl_done + dl_running;
+    let total_ul = ul_done + ul_running;
+    if total_dl > 0 {
+      lines.push(format!(
+        "{}  Downloads:  {} fetched",
+        v,
+        self.colored(&total_dl.to_string(), Color::Green)
+      ));
+    }
+    if total_ul > 0 {
+      lines.push(format!(
+        "{}  Uploads:    {} pushed",
+        v,
+        self.colored(&total_ul.to_string(), Color::Green)
+      ));
+    }
+
+    if !state.nix_errors.is_empty() {
+      lines.push(format!(
+        "{}  {} {} nix error(s)",
+        v,
+        self.colored("⚠", Color::Red),
+        state.nix_errors.len()
+      ));
+    }
+
+    let finish_label = if failed > 0 || !state.nix_errors.is_empty() {
+      self.colored(&format!("Exited at {at}"), Color::Red)
+    } else {
+      self.colored(&format!("Finished at {at}"), Color::Green)
+    };
+    lines.push(format!(
+      "{} {} after {}",
+      self.colored("┗━", Color::Blue),
+      finish_label,
+      self.colored(&self.format_duration(duration), Color::DarkGrey),
+    ));
 
     lines
   }
@@ -468,88 +426,184 @@ impl<W: Write> Display<W> {
     state: &State,
     has_tree: bool,
   ) -> Vec<String> {
-    let mut lines = Vec::new();
-
     let running = state.full_summary.running_builds.len();
     let completed = state.full_summary.completed_builds.len();
-    let failed = state.full_summary.failed_builds.len();
     let planned = state.full_summary.planned_builds.len();
+    let dl = state.full_summary.running_downloads.len();
+    let ul = state.full_summary.running_uploads.len();
 
-    if running > 0 || completed > 0 || failed > 0 || planned > 0 {
-      let duration = current_time() - state.start_time;
-      let prefix = if has_tree { "━" } else { "┏━" };
-      lines.push(format!(
-        "{} {} {running} │ {} {completed} │ {} {failed} │ {} {planned} │ {} {}",
-        self.colored(prefix, Color::Blue),
-        self.colored("⏵", Color::Yellow),
-        self.colored("✔", Color::Green),
-        self.colored("✗", Color::Red),
-        self.colored("⏸", Color::Grey),
-        self.colored("⏱", Color::Grey),
-        self.format_duration(duration)
-      ));
+    if running + completed + planned + dl + ul == 0 {
+      return vec![];
     }
 
-    lines
+    let duration = current_time() - state.start_time;
+    let prefix = if has_tree { "━" } else { "━" };
+
+    let mut parts: Vec<String> = Vec::new();
+    if running > 0 {
+      parts.push(format!("{} {running}", self.colored("⏵", Color::Yellow)));
+    }
+    if completed > 0 {
+      parts.push(format!("{} {completed}", self.colored("✔", Color::Green)));
+    }
+    if planned > 0 {
+      parts.push(format!("{} {planned}", self.colored("⏸", Color::Blue)));
+    }
+    if dl > 0 {
+      parts.push(format!("{} {dl}", self.colored("↓", Color::Yellow)));
+    }
+    if ul > 0 {
+      parts.push(format!("{} {ul}", self.colored("↑", Color::Yellow)));
+    }
+    parts.push(self.colored(&self.format_duration(duration), Color::DarkGrey));
+
+    vec![format!(
+      "{} {}",
+      self.colored(prefix, Color::Blue),
+      parts.join("  ")
+    )]
   }
 
   fn render_table_legend(&self, state: &State, has_tree: bool) -> Vec<String> {
-    let mut lines = Vec::new();
-
     let running = state.full_summary.running_builds.len();
     let completed = state.full_summary.completed_builds.len();
-    let failed = state.full_summary.failed_builds.len();
     let planned = state.full_summary.planned_builds.len();
+    let dl_running = state.full_summary.running_downloads.len();
+    let dl_done = state.full_summary.completed_downloads.len();
+    let ul_running = state.full_summary.running_uploads.len();
 
-    if running > 0 || completed > 0 || failed > 0 || planned > 0 {
-      let duration = current_time() - state.start_time;
+    let show_builds = running + completed + planned > 0;
+    let show_dl = dl_running + dl_done > 0;
+    let show_ul = ul_running > 0;
 
-      // Group by host
-      let mut host_counts: HashMap<String, (usize, usize, usize, usize)> =
-        HashMap::new();
-
-      for build in state.full_summary.running_builds.values() {
-        let host = build.host.name().to_string();
-        let entry = host_counts.entry(host).or_insert((0, 0, 0, 0));
-        entry.0 += 1;
-      }
-
-      for build in state.full_summary.completed_builds.values() {
-        let host = build.host.name().to_string();
-        let entry = host_counts.entry(host).or_insert((0, 0, 0, 0));
-        entry.1 += 1;
-      }
-
-      for build in state.full_summary.failed_builds.values() {
-        let host = build.host.name().to_string();
-        let entry = host_counts.entry(host).or_insert((0, 0, 0, 0));
-        entry.2 += 1;
-      }
-
-      // Add separator if this follows a tree, otherwise header
-      let header_prefix = if has_tree { "┣━━━" } else { "┏━" };
-      lines.push(format!(
-        "{} Builds",
-        self.colored(header_prefix, Color::Blue)
-      ));
-
-      // Summary line
-      let summary_prefix = if has_tree { "┗━" } else { "━" };
-      lines.push(format!(
-        "{} ∑ {} {} │ {} {} │ {} {} │ {} {} │ {} {}",
-        self.colored(summary_prefix, Color::Blue),
-        self.colored("⏵", Color::Yellow),
-        running,
-        self.colored("✔", Color::Green),
-        completed,
-        self.colored("✗", Color::Red),
-        failed,
-        self.colored("⏸", Color::Grey),
-        planned,
-        self.colored("⏱", Color::Grey),
-        self.format_duration(duration)
-      ));
+    if !show_builds && !show_dl && !show_ul {
+      return vec![];
     }
+
+    let duration = current_time() - state.start_time;
+
+    // Collect unique hosts from running builds to decide whether to show
+    // per-host rows
+    let mut host_set: std::collections::HashSet<String> =
+      std::collections::HashSet::new();
+    for b in state.full_summary.running_builds.values() {
+      host_set.insert(b.host.name().to_string());
+    }
+    for b in state.full_summary.completed_builds.values() {
+      host_set.insert(b.host.name().to_string());
+    }
+    let many_hosts = host_set.len() > 1;
+
+    // Build the header columns
+    let mut header_parts: Vec<&str> = Vec::new();
+    if show_builds {
+      header_parts.push("Builds");
+    }
+    if show_dl {
+      header_parts.push("Downloads");
+    }
+    if show_ul {
+      header_parts.push("Uploads");
+    }
+
+    // Build summary counts for the ∑ row
+    let mut sum_parts: Vec<String> = Vec::new();
+    if show_builds {
+      let mut bp = Vec::new();
+      if running > 0 {
+        bp.push(format!("{} {running}", self.colored("⏵", Color::Yellow)));
+      }
+      if completed > 0 {
+        bp.push(format!("{} {completed}", self.colored("✔", Color::Green)));
+      }
+      if planned > 0 {
+        bp.push(format!("{} {planned}", self.colored("⏸", Color::Blue)));
+      }
+      if !bp.is_empty() {
+        sum_parts.push(bp.join(" "));
+      }
+    }
+    if show_dl {
+      let mut dp = Vec::new();
+      if dl_running > 0 {
+        dp.push(format!("{} {dl_running}", self.colored("↓", Color::Yellow)));
+      }
+      if dl_done > 0 {
+        dp.push(format!("{} {dl_done}", self.colored("↓", Color::Green)));
+      }
+      if !dp.is_empty() {
+        sum_parts.push(dp.join(" "));
+      }
+    }
+    if show_ul {
+      sum_parts
+        .push(format!("{} {ul_running}", self.colored("↑", Color::Yellow)));
+    }
+    sum_parts
+      .push(self.colored(&self.format_duration(duration), Color::DarkGrey));
+
+    let mut lines = Vec::new();
+
+    // ━━━  [header cols], or ┣━━━ if following a tree
+    let header_sep = if has_tree {
+      "┣━━━"
+    } else {
+      "━━━"
+    };
+    lines.push(format!(
+      "{} {}",
+      self.colored(header_sep, Color::Blue),
+      header_parts.join("  ")
+    ));
+
+    // Per-host rows (only when multiple remote builders)
+    if many_hosts {
+      let mut hosts: Vec<String> = host_set.into_iter().collect();
+      hosts.sort();
+      for host in &hosts {
+        let mut row_parts: Vec<String> = Vec::new();
+        if show_builds {
+          let r = state
+            .full_summary
+            .running_builds
+            .values()
+            .filter(|b| b.host.name() == host)
+            .count();
+          let d = state
+            .full_summary
+            .completed_builds
+            .values()
+            .filter(|b| b.host.name() == host)
+            .count();
+          let mut bp = Vec::new();
+          if r > 0 {
+            bp.push(format!("{} {r}", self.colored("⏵", Color::Yellow)));
+          }
+          if d > 0 {
+            bp.push(format!("{} {d}", self.colored("✔", Color::Green)));
+          }
+          if !bp.is_empty() {
+            row_parts.push(bp.join(" "));
+          }
+        }
+        if !row_parts.is_empty() {
+          lines.push(format!(
+            "{}  {} {}",
+            self.colored("┃", Color::Blue),
+            row_parts.join(" │ "),
+            self.colored(host, Color::Magenta),
+          ));
+        }
+      }
+    }
+
+    // ┗━ ∑  [summary]
+    let tail = if has_tree { "┗━" } else { "┗━" };
+    lines.push(format!(
+      "{} ∑ {}",
+      self.colored(tail, Color::Blue),
+      sum_parts.join(" │ ")
+    ));
 
     lines
   }
@@ -559,165 +613,235 @@ impl<W: Write> Display<W> {
     state: &State,
     has_tree: bool,
   ) -> Vec<String> {
-    let mut lines = Vec::new();
-
     let running = state.full_summary.running_builds.len();
     let completed = state.full_summary.completed_builds.len();
-    let failed = state.full_summary.failed_builds.len();
     let planned = state.full_summary.planned_builds.len();
+    let dl_running = state.full_summary.running_downloads.len();
+    let ul_running = state.full_summary.running_uploads.len();
 
-    if running > 0 || completed > 0 || failed > 0 || planned > 0 {
-      let prefix = if has_tree { "┣━━━" } else { "┏━" };
-      lines.push(format!(
-        "{} Build Summary:",
-        self.colored(prefix, Color::Blue)
-      ));
-      lines.push(format!(
-        "┃    {} Running: {running}",
-        self.colored("⏵", Color::Yellow)
-      ));
-      lines.push(format!(
-        "┃    {} Completed: {completed}",
-        self.colored("✔", Color::Green)
-      ));
-      if failed > 0 {
-        lines.push(format!(
-          "┃    {} Failed: {failed}",
-          self.colored("✗", Color::Red)
-        ));
-      }
-      lines.push(format!(
-        "┃    {} Planned: {planned}",
-        self.colored("⏸", Color::Grey)
-      ));
+    if running + completed + planned + dl_running + ul_running == 0 {
+      return vec![];
+    }
 
-      let duration = current_time() - state.start_time;
+    let now = current_time();
+    let duration = now - state.start_time;
+    let prefix = if has_tree {
+      "┣━━━"
+    } else {
+      "━━━"
+    };
+    let v = self.colored("┃", Color::Blue);
+
+    let mut lines = Vec::new();
+    lines.push(format!("{} Builds", self.colored(prefix, Color::Blue)));
+
+    // One row per running build: name left-aligned, time right
+    let mut running_entries: Vec<(String, String, String)> = state
+      .full_summary
+      .running_builds
+      .iter()
+      .filter_map(|(drv_id, build)| {
+        let info = state.get_derivation_info(*drv_id)?;
+        let elapsed = now - build.start;
+        let host = match &build.host {
+          cognos::Host::Localhost => String::new(),
+          cognos::Host::Remote(h) => {
+            format!("  {}", self.colored(h, Color::Magenta))
+          },
+        };
+        Some((info.name.name.clone(), self.format_duration(elapsed), host))
+      })
+      .collect();
+    running_entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let name_width = running_entries
+      .iter()
+      .map(|(n, ..)| n.len())
+      .max()
+      .unwrap_or(0)
+      .min(48);
+
+    for (name, elapsed, host) in &running_entries {
       lines.push(format!(
-        "{} Total time: {}",
-        self.colored("━", Color::Blue),
-        self.format_duration(duration)
+        "{}  {} {:<width$}  {}{}",
+        v,
+        self.colored("⏵", Color::Yellow),
+        self.truncate_name(name, name_width),
+        self.colored(elapsed, Color::DarkGrey),
+        host,
+        width = name_width,
       ));
     }
+
+    // Running downloads
+    for (path_id, transfer) in &state.full_summary.running_downloads {
+      if let Some(pi) = state.store_path_infos.get(path_id) {
+        let elapsed = now - transfer.start;
+        let size = if let Some(total) = transfer.total_bytes {
+          self.format_bytes(transfer.bytes_transferred, total)
+        } else {
+          format!("{} B", transfer.bytes_transferred)
+        };
+        lines.push(format!(
+          "{}  {} {:<width$}  {} {}",
+          v,
+          self.colored("↓", Color::Yellow),
+          self.truncate_name(&pi.name.name, name_width),
+          self.colored(&size, Color::DarkGrey),
+          self.colored(&self.format_duration(elapsed), Color::DarkGrey),
+          width = name_width,
+        ));
+      }
+    }
+
+    // Summary line
+    let mut sum_parts: Vec<String> = Vec::new();
+    if running > 0 {
+      sum_parts.push(format!("{} {running}", self.colored("⏵", Color::Yellow)));
+    }
+    if completed > 0 {
+      sum_parts
+        .push(format!("{} {completed}", self.colored("✔", Color::Green)));
+    }
+    if planned > 0 {
+      sum_parts.push(format!("{} {planned}", self.colored("⏸", Color::Blue)));
+    }
+    if dl_running > 0 {
+      sum_parts
+        .push(format!("{} {dl_running}", self.colored("↓", Color::Yellow)));
+    }
+    if ul_running > 0 {
+      sum_parts
+        .push(format!("{} {ul_running}", self.colored("↑", Color::Yellow)));
+    }
+    sum_parts
+      .push(self.colored(&self.format_duration(duration), Color::DarkGrey));
+
+    lines.push(format!(
+      "{} ∑ {}",
+      self.colored("┗━", Color::Blue),
+      sum_parts.join("  ")
+    ));
 
     lines
   }
 
   fn render_plain_view(&self, state: &State) -> Vec<String> {
-    let mut lines = Vec::new();
-
+    let now = current_time();
+    let duration = now - state.start_time;
     let running = state.full_summary.running_builds.len();
     let planned = state.full_summary.planned_builds.len();
+    let completed = state.full_summary.completed_builds.len();
     let downloading = state.full_summary.running_downloads.len();
     let uploading = state.full_summary.running_uploads.len();
-    let duration = current_time() - state.start_time;
 
-    // Always show progress line with activity counts
-    let mut progress_parts = Vec::new();
+    if running + planned + completed + downloading + uploading == 0 {
+      return vec![];
+    }
 
-    if planned > 0 {
-      progress_parts.push(format!(
-        "{} {} planned",
-        self.colored("⏸", Color::Grey),
-        planned
+    let mut lines = Vec::new();
+
+    // Running builds
+    let mut builds: Vec<_> = state
+      .full_summary
+      .running_builds
+      .iter()
+      .filter_map(|(drv_id, build)| {
+        let info = state.get_derivation_info(*drv_id)?;
+        Some((info.name.name.clone(), build.clone()))
+      })
+      .collect();
+    builds.sort_by(|a, b| a.0.cmp(&b.0));
+
+    for (name, build) in &builds {
+      let elapsed = now - build.start;
+      let mut suffix = String::new();
+      if let Some(est) = build.estimate {
+        let remaining = est.saturating_sub(elapsed as u64);
+        suffix = format!(
+          "  {} {}",
+          self.colored("∅", Color::DarkGrey),
+          self
+            .colored(&self.format_duration(remaining as f64), Color::DarkGrey)
+        );
+      }
+      let host_label = match &build.host {
+        cognos::Host::Remote(h) => {
+          format!("  {}", self.colored(h, Color::Magenta))
+        },
+        _ => String::new(),
+      };
+      lines.push(format!(
+        "  {} {}  {}{}{}",
+        self.colored("⏵", Color::Yellow),
+        name,
+        self.colored(&self.format_duration(elapsed), Color::DarkGrey),
+        suffix,
+        host_label,
       ));
     }
+
+    // Running downloads
+    for (path_id, transfer) in &state.full_summary.running_downloads {
+      if let Some(pi) = state.store_path_infos.get(path_id) {
+        let size = if let Some(total) = transfer.total_bytes {
+          self.format_bytes(transfer.bytes_transferred, total)
+        } else {
+          format!("{} B", transfer.bytes_transferred)
+        };
+        lines.push(format!(
+          "  {} {}  {}",
+          self.colored("↓", Color::Yellow),
+          pi.name.name,
+          self.colored(&size, Color::DarkGrey),
+        ));
+      }
+    }
+
+    // Running uploads
+    for (path_id, transfer) in &state.full_summary.running_uploads {
+      if let Some(pi) = state.store_path_infos.get(path_id) {
+        let size = if let Some(total) = transfer.total_bytes {
+          self.format_bytes(transfer.bytes_transferred, total)
+        } else {
+          format!("{} B", transfer.bytes_transferred)
+        };
+        lines.push(format!(
+          "  {} {}  {}",
+          self.colored("↑", Color::Yellow),
+          pi.name.name,
+          self.colored(&size, Color::DarkGrey),
+        ));
+      }
+    }
+
+    // Summary bar at the bottom
+    let mut parts: Vec<String> = Vec::new();
+    if running > 0 {
+      parts.push(format!("{} {running}", self.colored("⏵", Color::Yellow)));
+    }
+    if completed > 0 {
+      parts.push(format!("{} {completed}", self.colored("✔", Color::Green)));
+    }
+    if planned > 0 {
+      parts.push(format!("{} {planned}", self.colored("⏸", Color::Blue)));
+    }
     if downloading > 0 {
-      progress_parts.push(format!(
-        "{} {} downloading",
-        self.colored("↓", Color::Blue),
-        downloading
+      parts.push(format!(
+        "{} {downloading}",
+        self.colored("↓", Color::Yellow)
       ));
     }
     if uploading > 0 {
-      progress_parts.push(format!(
-        "{} {} uploading",
-        self.colored("↑", Color::Green),
-        uploading
-      ));
+      parts.push(format!("{} {uploading}", self.colored("↑", Color::Yellow)));
     }
+    parts.push(self.colored(&self.format_duration(duration), Color::DarkGrey));
 
-    // Always show progress line, even if empty
-    if running > 0 || planned > 0 || downloading > 0 || uploading > 0 {
-      let progress_line = if progress_parts.is_empty() {
-        format!(
-          "{} {} {}",
-          self.colored("━", Color::Blue),
-          self.colored("⏱", Color::Grey),
-          self.format_duration(duration)
-        )
-      } else {
-        format!(
-          "{} {} {} {}",
-          self.colored("━", Color::Blue),
-          self.colored("⏱", Color::Grey),
-          progress_parts.join(" "),
-          self.format_duration(duration)
-        )
-      };
-      lines.push(progress_line);
-    }
-
-    // Show downloads
-    for (path_id, transfer) in &state.full_summary.running_downloads {
-      if let Some(path_info) = state.store_path_infos.get(path_id) {
-        let name = &path_info.name.name;
-        let size = if let Some(total) = transfer.total_bytes {
-          self.format_bytes(transfer.bytes_transferred, total)
-        } else {
-          format!("{} B", transfer.bytes_transferred)
-        };
-        lines.push(format!(
-          "  {} {} {}",
-          self.colored("↓", Color::Blue),
-          name,
-          size
-        ));
-      }
-    }
-
-    // Show uploads
-    for (path_id, transfer) in &state.full_summary.running_uploads {
-      if let Some(path_info) = state.store_path_infos.get(path_id) {
-        let name = &path_info.name.name;
-        let size = if let Some(total) = transfer.total_bytes {
-          self.format_bytes(transfer.bytes_transferred, total)
-        } else {
-          format!("{} B", transfer.bytes_transferred)
-        };
-        lines.push(format!(
-          "  {} {} {}",
-          self.colored("↑", Color::Green),
-          name,
-          size
-        ));
-      }
-    }
-
-    // Show running builds
-    for (drv_id, build) in &state.full_summary.running_builds {
-      if let Some(info) = state.get_derivation_info(*drv_id) {
-        let name = &info.name.name;
-        let elapsed = current_time() - build.start;
-
-        // Format time info
-        let mut time_info = String::new();
-        if let Some(estimate_secs) = build.estimate {
-          let remaining = estimate_secs.saturating_sub(elapsed as u64);
-          time_info.push_str(&format!(
-            "∅ {} ",
-            self.format_duration(remaining as f64)
-          ));
-        }
-        time_info.push_str(&self.format_duration(elapsed));
-
-        lines.push(format!(
-          "  {} {} {}",
-          self.colored("⏵", Color::Yellow),
-          name,
-          time_info
-        ));
-      }
-    }
+    lines.push(format!(
+      "{} {}",
+      self.colored("━", Color::Blue),
+      parts.join("  ")
+    ));
 
     lines
   }
@@ -801,20 +925,12 @@ impl<W: Write> Display<W> {
       lines.push(format!("BUILD GRAPH: {name}"));
       lines.push("─".repeat(44));
 
-      // Get host from build reports or completed builds
-      let host = if let Some((_, builds)) = state.build_reports.iter().next() {
-        if let Some(report) = builds.first() {
-          &report.host
-        } else {
-          "localhost"
-        }
-      } else if let Some((_, build)) =
-        state.full_summary.completed_builds.iter().next()
-      {
-        build.host.name()
-      } else {
-        "localhost"
-      };
+      let host = state
+        .full_summary
+        .completed_builds
+        .values()
+        .next()
+        .map_or("localhost", |b| b.host.name());
 
       let completed = state.full_summary.completed_builds.len();
       let failed = state.full_summary.failed_builds.len();
@@ -932,12 +1048,11 @@ impl<W: Write> Display<W> {
         BuildStatus::Building(_) | BuildStatus::Failed { .. }
       );
 
-      if should_show {
-        if let Some(child) =
+      if should_show
+        && let Some(child) =
           self.build_active_node(state, input.derivation, visited)
-        {
-          children.push(child);
-        }
+      {
+        children.push(child);
       }
     }
 
@@ -975,13 +1090,11 @@ impl<W: Write> Display<W> {
 
     // Phase information
     if let BuildStatus::Building(build_info) = &info.build_status {
-      if let Some(activity_id) = build_info.activity_id {
-        if let Some(activity) = state.activities.get(&activity_id) {
-          if let Some(phase) = &activity.phase {
-            line
-              .push_str(&self.colored(&format!(" ({phase})"), Color::DarkGrey));
-          }
-        }
+      if let Some(activity_id) = build_info.activity_id
+        && let Some(activity) = state.activities.get(&activity_id)
+        && let Some(phase) = &activity.phase
+      {
+        line.push_str(&self.colored(&format!(" ({phase})"), Color::DarkGrey));
       }
 
       // Time information
