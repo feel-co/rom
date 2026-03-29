@@ -26,7 +26,7 @@ impl Platform {
   /// than a separate command. This method exists so callers do not
   /// hardcode the name and future platforms (e.g. Tvix) can diverge.
   #[must_use]
-  pub fn binary(self) -> &'static str {
+  pub const fn binary(self) -> &'static str {
     match self {
       Self::Nix | Self::Lix => "nix",
     }
@@ -37,9 +37,7 @@ impl Platform {
   /// fails to run.
   #[must_use]
   pub fn detect() -> Self {
-    let output = std::process::Command::new("nix")
-      .arg("--version")
-      .output();
+    let output = std::process::Command::new("nix").arg("--version").output();
 
     if let Ok(out) = output {
       let version = String::from_utf8_lossy(&out.stdout);

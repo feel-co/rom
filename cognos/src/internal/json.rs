@@ -26,7 +26,7 @@ pub enum Activities {
 #[derive(Deserialize_repr, Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum ResultType {
-  /// Two ints: (linked_count, total_count)
+  /// Two ints: (`linked_count`, `total_count`)
   FileLinked       = 100,
   /// One string: a log line emitted by the builder
   BuildLogLine     = 101,
@@ -38,7 +38,7 @@ pub enum ResultType {
   SetPhase         = 104,
   /// Four ints: (done, expected, running, failed)
   Progress         = 105,
-  /// Two ints: (activity_type, expected_count)
+  /// Two ints: (`activity_type`, `expected_count`)
   SetExpected      = 106,
   /// One string: a log line from a post-build hook
   PostBuildLogLine = 107,
@@ -119,6 +119,7 @@ pub enum Actions {
 /// Parse a single line of `--log-format internal-json` output.
 /// Lines are prefixed with `@nix ` followed by a JSON object.
 /// Returns `None` for lines that are not internal-json messages.
+#[must_use] 
 pub fn parse_line(line: &str) -> Option<Actions> {
   let json = line.strip_prefix("@nix ")?;
   serde_json::from_str(json).ok()

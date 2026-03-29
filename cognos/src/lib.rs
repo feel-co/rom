@@ -8,6 +8,8 @@ pub use aterm::{
   extract_version,
   parse_drv_file,
 };
-pub use internal::json::{Actions, Activities, Id, ResultType, Verbosity};
-pub use internal::Platform;
+pub use internal::{
+  Platform,
+  json::{Actions, Activities, Id, ResultType, Verbosity},
+};
 pub use state::{Host, OutputName, ProgressState};
