@@ -1,4 +1,3 @@
-
 use std::{
   collections::HashMap,
   fs::{self, File, OpenOptions},
@@ -89,11 +88,14 @@ impl BuildReportCache {
 
       let report = BuildReport {
         derivation_name: row.derivation_name.clone(),
-        platform: String::new(), // FIXME: not stored in CSV, for simplicity and because I'm lazy
         duration_secs: row.build_seconds as f64,
         completed_at,
         host: row.hostname.clone(),
         success: true, // only successful builds are cached
+
+        // FIXME: not stored in CSV. This is for simplicity, and because I'm
+        // lazy
+        platform: String::new(),
       };
 
       let key = (row.hostname, row.derivation_name);
@@ -139,12 +141,15 @@ impl BuildReportCache {
       existing.truncate(HISTORY_LIMIT);
     }
 
-    // Write to CSV
+    // Write to a temp file in the same directory, then rename atomically.
+    // This prevents a concurrent save() from corrupting the cache file.
+    let tmp_path = self.cache_path.with_extension("csv.tmp");
+
     let file = OpenOptions::new()
       .write(true)
       .create(true)
       .truncate(true)
-      .open(&self.cache_path)?;
+      .open(&tmp_path)?;
 
     let writer = BufWriter::new(file);
     let mut csv_writer = Writer::from_writer(writer);
@@ -163,6 +168,11 @@ impl BuildReportCache {
     }
 
     csv_writer.flush()?;
+    drop(csv_writer);
+
+    // Atomic replace
+    fs::rename(&tmp_path, &self.cache_path)?;
+
     Ok(())
   }
 
