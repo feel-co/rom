@@ -21,7 +21,7 @@ pub static UNICODE: Icons = Icons {
   running:  "⏵",
   done:     "✔",
   planned:  "⏸",
-  failed:   "⚠",
+  failed:   "✗",
   download: "↓",
   upload:   "↑",
   clock:    "⏱",
