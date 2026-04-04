@@ -1,21 +1,23 @@
 # ROM
 
-A Nix build output monitor for visualizing your Nix builds, with Rust
-characteristics and DX.
+Visual build monitor for Nix that transforms cryptic build logs into a clean,
+real-time dependency graph. Think of it as `NOM`, but written in Rust with a
+focus on speed, configurability, and showing you exactly what Nix is doing with
+your builds.
 
-This project is heavily work in progress. The parser is mostly complete, and
-located in [`./cognos`](./cognos)
+Built with a modular parser under [`./cognos`](./cognos) that handles the ATerm
+and internal-json log formats from Nix.
 
 > [!NOTE]
-> This project is not yet stable. While it can not harm your projeeect, bugs
-> must be expected due to its in-dev status. If you end up using ROM, please
-> make sure to report any bugs :)
+> ROM is still under active development. Things may break, output formats may
+> change, and bugs are to be expected. If you encounter any issues, please
+> report them!
 
 ## Usage
 
-> [!WARNING]
-> The CLI interface of ROM is not yet stable, and may be subject to change.
-> Plase consult the `--help` output before reporting a bug.
+ROM is primarily designed to wrap the Nix installation on your system. As such,
+the _recommended_ interface is using `rom build`, `rom shell` and `rom develop`
+for their Nix counterparts.
 
 ```terminal
 $ rom -h
@@ -52,7 +54,9 @@ $ rom build nixpkgs#hello
 ┗━ ∑ ⏵ 1 │ ✔ 0 │ ✗ 0 │ ⏸ 4 │ ⏱ 2s
 ```
 
-and the dependency tree will appear below.
+and the dependency tree will appear below. Each package in your closure appears
+as a node, with spinners and timers showing real-time progress. When a build
+finishes, you'll see a clear status with neat little glyphs.
 
 ### Argument Passthrough
 
