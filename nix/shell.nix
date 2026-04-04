@@ -7,6 +7,7 @@
   taplo,
   rust-analyzer-unwrapped,
   rustPlatform,
+  cargo-nextest,
 }:
 mkShell {
   name = "rust";
@@ -20,7 +21,9 @@ mkShell {
     cargo
     taplo
     rust-analyzer-unwrapped
+
+    cargo-nextest
   ];
 
-  RUST_SRC_PATH = "${rustPlatform.rustLibSrc}";
+  env.RUST_SRC_PATH = "${rustPlatform.rustLibSrc}";
 }
