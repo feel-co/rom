@@ -23,7 +23,7 @@ pub struct Cli {
   #[arg(long, global = true)]
   pub silent: bool,
 
-  /// Output format: tree, plain
+  /// Output format: tree, plain, dashboard
   #[arg(long, global = true, default_value = "tree")]
   pub format: String,
 
@@ -593,10 +593,10 @@ fn run_monitored_command(
     use rom_core::display::{Display, DisplayConfig};
 
     let display_config = DisplayConfig {
-      show_timers: !silent,
+      show_timers: true,
       max_tree_depth: 10,
       max_visible_lines: 100,
-      use_color: !silent,
+      use_color: true,
       format,
       legend_style,
       summary_style,
@@ -616,10 +616,14 @@ fn run_monitored_command(
         || !state.full_summary.running_builds.is_empty()
         || !state.full_summary.planned_builds.is_empty();
 
-      if !silent {
-        // Get buffered logs for coordinated rendering
-        let logs: Vec<String> =
-          log_buffer_render.lock().unwrap().iter().cloned().collect();
+      {
+        // Get buffered logs for coordinated rendering (suppressed when
+        // --silent)
+        let logs: Vec<String> = if silent {
+          vec![]
+        } else {
+          log_buffer_render.lock().unwrap().iter().cloned().collect()
+        };
 
         if has_activity || state.progress_state != ProgressState::JustStarted {
           // Clear any previous timer display
@@ -649,7 +653,7 @@ fn run_monitored_command(
 
     // Final render
     thread::sleep(Duration::from_millis(50));
-    if !silent {
+    {
       let mut state = render_state.lock().unwrap();
       rom_core::update::finish_state(&mut state);
       let _ = display.render_final(&state);

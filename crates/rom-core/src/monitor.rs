@@ -100,9 +100,7 @@ impl<W: Write> Monitor<W> {
 
       // Render periodically
       if last_render.elapsed() >= render_interval {
-        if !self.config.silent {
-          self.display.render(&self.state, &[])?;
-        }
+        self.display.render(&self.state, &[])?;
         last_render = std::time::Instant::now();
       }
     }
@@ -110,9 +108,7 @@ impl<W: Write> Monitor<W> {
     // Mark as finished and do final render
     crate::update::finish_state(&mut self.state);
 
-    if !self.config.silent {
-      self.display.render_final(&self.state)?;
-    }
+    self.display.render_final(&self.state)?;
 
     // Save build cache for future predictions
     let cache_path = BuildReportCache::default_cache_path();
