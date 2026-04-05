@@ -18,7 +18,6 @@ mkShell {
 
     (rustfmt.override {asNightly = true;})
     clippy
-    cargo
     taplo
     rust-analyzer-unwrapped
 
