@@ -517,7 +517,7 @@ fn extract_exit_code(line: &str) -> Option<i32> {
 }
 
 /// Extract a path from a message line
-fn extract_path_from_message(line: &str) -> Option<String> {
+pub fn extract_path_from_message(line: &str) -> Option<String> {
   // Look for quoted paths
   if let Some(start) = line.find('\'')
     && let Some(end) = line[start + 1..].find('\'')
@@ -542,7 +542,7 @@ fn extract_path_from_message(line: &str) -> Option<String> {
 }
 
 /// Extract byte size from a message line (e.g., "downloaded 123 KiB")
-fn extract_byte_size(line: &str) -> Option<u64> {
+pub fn extract_byte_size(line: &str) -> Option<u64> {
   // Look for patterns like "123 KiB", "6.7 MiB", etc.
   // Haha 6.7
   let words: Vec<&str> = line.split_whitespace().collect();
@@ -566,47 +566,4 @@ fn extract_byte_size(line: &str) -> Option<u64> {
     }
   }
   None
-}
-
-#[cfg(test)]
-mod tests {
-  use super::*;
-
-  #[test]
-  fn test_monitor_creation() {
-    let config = Config::default();
-    let output = Vec::new();
-    let monitor = Monitor::new(config, output);
-    assert!(monitor.is_ok());
-  }
-
-  #[test]
-  fn test_extract_path_from_message() {
-    let line = "building '/nix/store/abc123-hello-1.0.drv'";
-    let path = extract_path_from_message(line);
-    assert!(path.is_some());
-    assert!(path.unwrap().contains("hello-1.0.drv"));
-  }
-
-  #[test]
-  fn test_extract_path_unquoted() {
-    let line = "building /nix/store/abc123-hello-1.0.drv locally";
-    let path = extract_path_from_message(line);
-    assert!(path.is_some());
-  }
-
-  #[test]
-  fn test_extract_byte_size() {
-    let line = "downloaded 123 KiB in 2 seconds";
-    assert_eq!(extract_byte_size(line), Some(123 * 1024));
-
-    let line2 = "downloading 4.5 MiB";
-    assert_eq!(
-      extract_byte_size(line2),
-      Some((4.5 * 1024.0 * 1024.0) as u64)
-    );
-
-    let line3 = "no size here";
-    assert_eq!(extract_byte_size(line3), None);
-  }
 }

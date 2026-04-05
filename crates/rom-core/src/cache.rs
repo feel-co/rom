@@ -205,7 +205,7 @@ impl BuildReportCache {
   }
 }
 
-fn parse_utc_time(s: &str) -> Option<SystemTime> {
+pub fn parse_utc_time(s: &str) -> Option<SystemTime> {
   let ndt = NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").ok()?;
   let dt: DateTime<Utc> = ndt.and_utc();
   let secs = dt.timestamp();
@@ -215,92 +215,11 @@ fn parse_utc_time(s: &str) -> Option<SystemTime> {
   Some(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs as u64))
 }
 
-fn format_utc_time(time: SystemTime) -> String {
+pub fn format_utc_time(time: SystemTime) -> String {
   let duration = time
     .duration_since(SystemTime::UNIX_EPOCH)
     .unwrap_or_default();
   let dt = DateTime::<Utc>::from_timestamp(duration.as_secs() as i64, 0)
     .unwrap_or_default();
   dt.format("%Y-%m-%d %H:%M:%S").to_string()
-}
-
-#[cfg(test)]
-mod tests {
-  use super::*;
-
-  #[test]
-  fn test_calculate_median_odd() {
-    let reports = vec![
-      BuildReport {
-        derivation_name: "test".to_string(),
-        platform:        "x86_64-linux".to_string(),
-        duration_secs:   10.0,
-        completed_at:    SystemTime::UNIX_EPOCH,
-        host:            "localhost".to_string(),
-        success:         true,
-      },
-      BuildReport {
-        derivation_name: "test".to_string(),
-        platform:        "x86_64-linux".to_string(),
-        duration_secs:   20.0,
-        completed_at:    SystemTime::UNIX_EPOCH,
-        host:            "localhost".to_string(),
-        success:         true,
-      },
-      BuildReport {
-        derivation_name: "test".to_string(),
-        platform:        "x86_64-linux".to_string(),
-        duration_secs:   30.0,
-        completed_at:    SystemTime::UNIX_EPOCH,
-        host:            "localhost".to_string(),
-        success:         true,
-      },
-    ];
-
-    assert_eq!(BuildReportCache::calculate_median(&reports), Some(20));
-  }
-
-  #[test]
-  fn test_calculate_median_even() {
-    let reports = vec![
-      BuildReport {
-        derivation_name: "test".to_string(),
-        platform:        "x86_64-linux".to_string(),
-        duration_secs:   10.0,
-        completed_at:    SystemTime::UNIX_EPOCH,
-        host:            "localhost".to_string(),
-        success:         true,
-      },
-      BuildReport {
-        derivation_name: "test".to_string(),
-        platform:        "x86_64-linux".to_string(),
-        duration_secs:   20.0,
-        completed_at:    SystemTime::UNIX_EPOCH,
-        host:            "localhost".to_string(),
-        success:         true,
-      },
-    ];
-
-    assert_eq!(BuildReportCache::calculate_median(&reports), Some(15));
-  }
-
-  #[test]
-  fn test_calculate_median_empty() {
-    let reports = vec![];
-    assert_eq!(BuildReportCache::calculate_median(&reports), None);
-  }
-
-  #[test]
-  fn test_format_parse_utc_time() {
-    let time =
-      SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
-    let formatted = format_utc_time(time);
-    let parsed = parse_utc_time(&formatted).unwrap();
-
-    let diff = parsed
-      .duration_since(time)
-      .unwrap_or_else(|e| e.duration())
-      .as_secs();
-    assert_eq!(diff, 0);
-  }
 }

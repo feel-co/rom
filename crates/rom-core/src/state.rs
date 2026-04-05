@@ -5,7 +5,8 @@ use std::{
   time::{Duration, SystemTime},
 };
 
-use cognos::{Host, Id, OutputName, ProgressState};
+pub use cognos::ProgressState;
+use cognos::{Host, Id, OutputName};
 use indexmap::IndexMap;
 
 /// Unique identifier for store paths
@@ -506,39 +507,19 @@ impl State {
       }
     }
 
-    // Check if parent derivation is actively building
-    let parent_is_building = {
-      if let Some(parent_info) = self.get_derivation_info(drv_id) {
-        matches!(parent_info.build_status, BuildStatus::Building(_))
-      } else {
-        false
-      }
-    };
-
     // Process input derivations
     for (input_drv_path, outputs) in parsed.input_drvs {
       if let Some(input_drv) = Derivation::parse(&input_drv_path) {
         let input_drv_id = self.get_or_create_derivation_id(input_drv);
 
-        // Mark dependencies as Planned if parent is Building and input is
-        // Unknown This ensures we only count real dependencies that
-        // will be built
-        if parent_is_building
-          && let Some(input_info) = self.get_derivation_info(input_drv_id)
-        {
-          if matches!(input_info.build_status, BuildStatus::Unknown) {
-            debug!(
-              "Marking input derivation {} as Planned (parent {} is Building)",
-              input_drv_id, drv_id
-            );
-            self.update_build_status(input_drv_id, BuildStatus::Planned);
-          } else {
-            debug!(
-              "Input derivation {} current status: {:?}",
-              input_drv_id, input_info.build_status
-            );
-          }
-        }
+        // Do NOT auto-mark inputs as Planned here.  A derivation should only
+        // be marked Planned when Nix explicitly reports it will be built (via
+        // a build-queued or similar protocol event).  Inputs that are already
+        // in the store are Unknown and have an empty dependencySummary; the
+        // tree renderer filters them out (node_is_visible returns false for
+        // Unknown nodes with an empty summary).  Marking them Planned here
+        // causes all cached/already-built inputs to incorrectly appear in the
+        // tree, which is exactly the discrepancy with NOM's output.
 
         // Create output set
         let mut output_set = HashSet::new();
@@ -881,40 +862,4 @@ pub fn current_time() -> f64 {
     .duration_since(SystemTime::UNIX_EPOCH)
     .unwrap_or(Duration::ZERO)
     .as_secs_f64()
-}
-
-#[cfg(test)]
-mod tests {
-  use super::*;
-
-  #[test]
-  fn test_store_path_parse() {
-    let path = "/nix/store/abc123-hello-1.0";
-    let sp = StorePath::parse(path).unwrap();
-    assert_eq!(sp.hash, "abc123");
-    assert_eq!(sp.name, "hello-1.0");
-  }
-
-  #[test]
-  fn test_derivation_parse() {
-    let path = "/nix/store/abc123-hello-1.0.drv";
-    let drv = Derivation::parse(path).unwrap();
-    assert_eq!(drv.name, "hello-1.0");
-  }
-
-  #[test]
-  fn test_state_creation() {
-    let state = State::new();
-    assert_eq!(state.progress_state, ProgressState::JustStarted);
-    assert_eq!(state.total_builds(), 0);
-  }
-
-  #[test]
-  fn test_get_or_create_ids() {
-    let mut state = State::new();
-    let path = StorePath::parse("/nix/store/abc123-hello-1.0").unwrap();
-    let id1 = state.get_or_create_store_path_id(path.clone());
-    let id2 = state.get_or_create_store_path_id(path);
-    assert_eq!(id1, id2);
-  }
 }

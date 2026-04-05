@@ -97,8 +97,8 @@ impl<W: Write> Display<W> {
   }
 
   pub fn render(&mut self, state: &State, logs: &[String]) -> io::Result<()> {
-    // Print any log lines that arrived since last render.
-    // These are printed once and scroll up naturally, we never clear them.
+    // Print any log lines that arrived since last render. These are printed
+    // once and scroll up naturally, we never clear them.
     let new_logs = &logs[self.printed_log_lines.min(logs.len())..];
     if !new_logs.is_empty() {
       // Clear the current graph first so new logs appear above it
@@ -193,10 +193,7 @@ impl<W: Write> Display<W> {
     }
   }
 
-  /// Final single-line summary. Matches NOM's finish markup:
-  /// - success:  `Finished at HH:MM:SS after Xs  ✔ N`
-  /// - failure:  `⚠ Exited after N build failures at HH:MM:SS after Xs`
-  /// - errors:   `⚠ Exited with N nix errors at HH:MM:SS after Xs`
+  /// Renders the final single-line summary
   fn render_finished_line(&self, state: &State) -> Vec<String> {
     let failed = state.full_summary.failed_builds.len();
     let completed = state.full_summary.completed_builds.len();
@@ -642,8 +639,8 @@ impl<W: Write> Display<W> {
       }
     }
 
-    // ∑ row: always emit all three build-state columns (NOM behaviour —
-    // counts are shown even when zero, just dimmed to grey).
+    // Always emit all three build-state columns; counts are shown
+    // even when zero, just dimmed to grey.
     let ic = self.ic();
     let mut sum_parts: Vec<String> = Vec::new();
     if show_builds {
@@ -676,24 +673,22 @@ impl<W: Write> Display<W> {
         ));
       }
     }
-    if show_ul {
-      if ul_running > 0 || ul_done > 0 {
-        sum_parts.push(format!(
-          "{} {}",
-          self.colored(ic.upload, Color::DarkGrey),
-          [
-            (ul_running > 0).then(|| {
-              self.count_colored(ic.running, ul_running, Color::DarkYellow)
-            }),
-            (ul_done > 0)
-              .then(|| self.count_colored(ic.done, ul_done, Color::DarkGreen)),
-          ]
-          .into_iter()
-          .flatten()
-          .collect::<Vec<_>>()
-          .join(" "),
-        ));
-      }
+    if show_ul && (ul_running > 0 || ul_done > 0) {
+      sum_parts.push(format!(
+        "{} {}",
+        self.colored(ic.upload, Color::DarkGrey),
+        [
+          (ul_running > 0).then(|| {
+            self.count_colored(ic.running, ul_running, Color::DarkYellow)
+          }),
+          (ul_done > 0)
+            .then(|| self.count_colored(ic.done, ul_done, Color::DarkGreen)),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" "),
+      ));
     }
     // Elapsed with clock icon
     sum_parts.push(format!(
@@ -1145,50 +1140,104 @@ impl<W: Write> Display<W> {
   }
 
   fn render_tree_view(&self, state: &State) -> Vec<String> {
-    let mut lines = Vec::new();
-
-    // Filter roots to only show those that are actively building
-    let active_roots: Vec<DerivationId> = state
+    // Show roots that have any interesting build activity. This currently
+    // consists of:
+    //
+    // - actively building
+    // - failed
+    // - planned (with dependencies)
+    // - recently completed
+    //
+    // Which is the same as showing the full dependency forest, which is
+    // what we want to do for the tree view.
+    let visible_roots: Vec<DerivationId> = state
       .forest_roots
       .iter()
       .copied()
       .filter(|&drv_id| {
-        if let Some(info) = state.get_derivation_info(drv_id) {
-          matches!(
-            info.build_status,
-            BuildStatus::Building(_) | BuildStatus::Failed { .. }
-          )
-        } else {
-          false
-        }
+        state
+          .get_derivation_info(drv_id)
+          .map(|info| self.node_is_visible(info))
+          .unwrap_or(false)
       })
       .collect();
 
-    if active_roots.is_empty() {
-      return lines;
+    if visible_roots.is_empty() {
+      return Vec::new();
     }
 
-    let forest = self.build_active_forest(state, &active_roots);
+    let forest = self.build_forest(state, &visible_roots);
 
     if forest.is_empty() {
-      return lines;
+      return Vec::new();
     }
 
-    // Add header as first line
+    let mut lines = Vec::new();
     lines.push(format!(
       "{} Dependency Graph:",
       self.colored("┏━", Color::DarkBlue)
     ));
 
-    // Render each root with its tree
-    for node in &forest {
-      self.render_tree_node(state, node, &mut lines);
+    let n = forest.len();
+    if n == 1 {
+      // Single root: render directly, no cross-tree connector wrapping.
+      // render_tree_node already handles ┃ prefix.
+      self.render_tree_node(state, &forest[0], &mut lines);
+    } else {
+      // Multiple roots: render in reverse, apply forest-level connectors.
+      for (rev_i, node) in forest.iter().rev().enumerate() {
+        // rev_i == 0 <-> this was the LAST root -> rendered first -> top
+        let is_top_tree = rev_i == 0;
+
+        let mut tree_lines: Vec<String> = Vec::new();
+        self.render_tree_node(state, node, &mut tree_lines);
+
+        // The root-of-tree line is the LAST element in tree_lines (bottom).
+        for (line_idx, tree_line) in tree_lines.iter().enumerate() {
+          // Topmost line of this tree block.
+          let connector = if is_top_tree {
+            if line_idx == 0 {
+              self.colored("┌─ ", Color::DarkBlue)
+            } else {
+              "   ".to_string()
+            }
+          } else if line_idx == 0 {
+            self.colored("├─ ", Color::DarkBlue)
+          } else {
+            self.colored("│  ", Color::DarkBlue)
+          };
+          lines.push(format!("{connector}{tree_line}"));
+        }
+      }
     }
 
     lines
   }
 
-  fn build_active_forest(
+  /// Determine whether a derivation node is interesting enough to appear in
+  /// the tree. Basically, show anything whose subtree summary
+  /// has at least one non-empty build/transfer count, or whose own status is
+  /// not Unknown-and-empty.
+  fn node_is_visible(&self, info: &crate::state::DerivationInfo) -> bool {
+    use crate::state::DependencySummary;
+    let summary_non_empty = |s: &DependencySummary| {
+      !s.planned_builds.is_empty()
+        || !s.running_builds.is_empty()
+        || !s.completed_builds.is_empty()
+        || !s.failed_builds.is_empty()
+        || !s.running_downloads.is_empty()
+        || !s.running_uploads.is_empty()
+        || !s.completed_downloads.is_empty()
+        || !s.completed_uploads.is_empty()
+    };
+
+    match &info.build_status {
+      BuildStatus::Unknown => summary_non_empty(&info.dependency_summary),
+      _ => true,
+    }
+  }
+
+  fn build_forest(
     &self,
     state: &State,
     roots: &[DerivationId],
@@ -1197,7 +1246,8 @@ impl<W: Write> Display<W> {
     let mut visited = HashSet::new();
 
     for &root_id in roots {
-      if let Some(node) = self.build_active_node(state, root_id, &mut visited) {
+      if let Some(node) = self.build_tree_node(state, root_id, &mut visited, 0)
+      {
         forest.push(node);
       }
     }
@@ -1205,41 +1255,79 @@ impl<W: Write> Display<W> {
     forest
   }
 
-  fn build_active_node(
+  fn build_tree_node(
     &self,
     state: &State,
     drv_id: DerivationId,
     visited: &mut HashSet<DerivationId>,
+    depth: usize,
   ) -> Option<TreeNode> {
     if visited.contains(&drv_id) {
       return None;
     }
     visited.insert(drv_id);
 
+    if depth >= self.config.max_tree_depth {
+      return Some(TreeNode {
+        drv_id,
+        children: Vec::new(),
+      });
+    }
+
     let drv_info = state.get_derivation_info(drv_id)?;
 
-    // Only include actively building or failed children
-    let mut children = Vec::new();
+    let mut children: Vec<TreeNode> = Vec::new();
     for input in &drv_info.input_derivations {
-      let child_info = state.get_derivation_info(input.derivation)?;
+      let child_info = match state.get_derivation_info(input.derivation) {
+        Some(i) => i,
+        None => continue,
+      };
 
-      // Only show children that are actively building or failed
-      let should_show = matches!(
-        child_info.build_status,
-        BuildStatus::Building(_) | BuildStatus::Failed { .. }
-      );
+      // Show the child if it has any build activity (own or in its subtree)
+      if !self.node_is_visible(child_info) {
+        continue;
+      }
 
-      if should_show
-        && let Some(child) =
-          self.build_active_node(state, input.derivation, visited)
+      if let Some(child) =
+        self.build_tree_node(state, input.derivation, visited, depth + 1)
       {
         children.push(child);
       }
     }
 
+    // Failed > Building > Planned/downloads > Done > Unknown
+    children.sort_by_key(|c| {
+      state
+        .get_derivation_info(c.drv_id)
+        .map(|i| self.tree_sort_priority(&i.build_status))
+        .unwrap_or(u8::MAX)
+    });
+
     Some(TreeNode { drv_id, children })
   }
 
+  /// Returns a sort priority for tree children.
+  /// Lower number = shown first (most urgent / most important).
+  fn tree_sort_priority(&self, status: &BuildStatus) -> u8 {
+    match status {
+      BuildStatus::Failed { .. } => 0,
+      BuildStatus::Building(_) => 1,
+      BuildStatus::Planned => 2,
+      BuildStatus::Unknown => 3,
+      BuildStatus::Built { .. } => 4,
+    }
+  }
+
+  /// Render a single tree node (root-of-a-tree position) and all its
+  /// children into `lines`.
+  ///
+  /// Layout (top -> bottom):
+  ///   last child's subtree (┌─ connector, 3-space continuation)
+  ///   ...earlier children (├─ connector, │ continuation)...
+  ///   root node
+  ///
+  /// The last sibling ends up at the top with a ┌─ connector; children are
+  /// rendered in reverse so that the last child appears first in the output.
   fn render_tree_node(
     &self,
     state: &State,
@@ -1251,66 +1339,39 @@ impl<W: Write> Display<W> {
       None => return,
     };
 
-    // Render children first (so they appear above root)
-    for (i, child) in node.children.iter().enumerate() {
-      let is_last = i == node.children.len() - 1;
-      self.render_tree_child(state, child, lines, is_last, "┃ ");
+    // Children are iterated in reverse so the original last child is rendered
+    // first and appears at the top. The top sibling gets ┌─; all others get ├─.
+    let n = node.children.len();
+    for (rev_i, child) in node.children.iter().rev().enumerate() {
+      let is_top = rev_i == 0;
+      self.render_tree_child(
+        state,
+        child,
+        lines,
+        is_top,
+        &self.colored("┃ ", Color::DarkBlue),
+      );
     }
 
-    // Then render the root node at bottom
+    let _ = n;
     let mut line = String::new();
     line.push_str(&self.colored("┃ ", Color::DarkBlue));
-
-    // Status icon
-    let (icon, color) = self.get_status_icon(&info.build_status);
-    line.push_str(&self.colored(icon, color));
-    line.push(' ');
-
-    // Package name
-    line.push_str(&self.truncate_name(&info.name.name, 50));
-
-    // Phase information
-    if let BuildStatus::Building(build_info) = &info.build_status {
-      if let Some(activity_id) = build_info.activity_id
-        && let Some(activity) = state.activities.get(&activity_id)
-        && let Some(phase) = &activity.phase
-      {
-        line.push_str(&self.colored(&format!(" ({phase})"), Color::DarkGrey));
-      }
-
-      // Time information
-      let elapsed = current_time() - build_info.start;
-
-      let ic = self.ic();
-      // Show estimate if available
-      if let Some(estimate_secs) = build_info.estimate {
-        let remaining = estimate_secs.saturating_sub(elapsed as u64);
-        line.push_str(&self.colored(
-          &format!(
-            " {} {}",
-            ic.estimate,
-            self.format_duration(remaining as f64)
-          ),
-          Color::DarkGrey,
-        ));
-      }
-
-      // Show elapsed time
-      line.push_str(&self.colored(
-        &format!(" {} {}", ic.clock, self.format_duration(elapsed)),
-        Color::DarkGrey,
-      ));
-    }
-
+    line.push_str(&self.format_node_content(state, info, false));
     lines.push(line);
   }
 
+  /// Render a child node and its subtree.
+  ///
+  /// `is_top` is true when this node is the topmost sibling in the display
+  /// (i.e. the original last child, rendered first due to the reverse).
+  /// Top siblings use `┌─` connector and 3-space continuation above them, all
+  /// other siblings use `├─` and `│  ` continuation.
   fn render_tree_child(
     &self,
     state: &State,
     node: &TreeNode,
     lines: &mut Vec<String>,
-    is_last_child: bool,
+    is_top: bool,
     prefix: &str,
   ) {
     let info = match state.get_derivation_info(node.drv_id) {
@@ -1318,51 +1379,238 @@ impl<W: Write> Display<W> {
       None => return,
     };
 
-    // Render this node's children FIRST (they go above)
-    for (i, child) in node.children.iter().enumerate() {
-      let is_last = i == node.children.len() - 1;
-      let child_prefix = if is_last_child {
-        format!("{prefix}   ")
-      } else {
-        format!("{prefix}│  ")
-      };
+    // The continuation prefix for grandchildren depends on whether this node is
+    // the top sibling or not. The incoming prefix already contains colored
+    // characters.
+    let child_prefix = if is_top {
+      format!("{prefix}   ")
+    } else {
+      format!("{prefix}{}", self.colored("│  ", Color::DarkBlue))
+    };
 
-      self.render_tree_child(state, child, lines, is_last, &child_prefix);
+    for (rev_i, child) in node.children.iter().rev().enumerate() {
+      let grandchild_is_top = rev_i == 0;
+      self.render_tree_child(
+        state,
+        child,
+        lines,
+        grandchild_is_top,
+        &child_prefix,
+      );
     }
 
-    // Then render this node
+    // prefix + connector + content
     let mut line = String::new();
     line.push_str(prefix);
 
-    let connector = if is_last_child { "└─ " } else { "├─ " };
+    // ┌─ for the top sibling (was last before reverse), ├─ for all others
+    let connector = if is_top { "┌─ " } else { "├─ " };
     line.push_str(&self.colored(connector, Color::DarkBlue));
 
-    let (icon, color) = self.get_status_icon(&info.build_status);
-    line.push_str(&self.colored(icon, color));
-    line.push(' ');
-    line.push_str(&self.truncate_name(&info.name.name, 48));
-
-    // Show elapsed time for active children
-    if let BuildStatus::Building(build_info) = &info.build_status {
-      let elapsed = current_time() - build_info.start;
-      let ic = self.ic();
-      line.push_str(&self.colored(
-        &format!("  {} {}", ic.clock, self.format_duration(elapsed)),
-        Color::DarkGrey,
-      ));
-    }
+    let is_leaf = node.children.is_empty();
+    line.push_str(&self.format_node_content(state, info, is_leaf));
 
     lines.push(line);
   }
 
-  fn get_status_icon(&self, status: &BuildStatus) -> (&'static str, Color) {
+  /// Format the textual content for a single tree node (without any connector
+  /// prefix). `is_leaf` controls whether a "waiting for ..." annotation is
+  /// appended for Planned leaf nodes.
+  fn format_node_content(
+    &self,
+    state: &State,
+    info: &crate::state::DerivationInfo,
+    is_leaf: bool,
+  ) -> String {
+    let ic = self.ic();
+    let mut s = String::new();
+
+    // Unknown nodes have no icon; all others get icon + space prefix.
+    if let Some((icon, color)) = self.get_status_icon(&info.build_status) {
+      s.push_str(&self.colored(icon, color));
+      s.push(' ');
+    }
+    // Name color varies by build status.
+    let raw_name = self.truncate_name(&info.name.name, 50);
+    let name_str = match &info.build_status {
+      BuildStatus::Building(_) => {
+        self.colored_bold(&raw_name, Color::DarkYellow)
+      },
+      BuildStatus::Failed { .. } => {
+        self.colored_bold(&raw_name, Color::DarkRed)
+      },
+      BuildStatus::Built { .. } => self.colored(&raw_name, Color::DarkGreen),
+      _ => raw_name,
+    };
+    s.push_str(&name_str);
+
+    match &info.build_status {
+      BuildStatus::Building(build_info) => {
+        // Show host in magenta.
+        if let cognos::Host::Remote(ref host_name) = build_info.host {
+          s.push_str(
+            &self.colored(&format!(" on {host_name}"), Color::Magenta),
+          );
+        }
+
+        // Show current build phase in bold
+        if let Some(activity_id) = build_info.activity_id
+          && let Some(activity) = state.activities.get(&activity_id)
+          && let Some(phase) = &activity.phase
+        {
+          s.push_str(
+            &self.colored_bold(&format!(" ({phase})"), Color::DarkGrey),
+          );
+        }
+
+        let elapsed = current_time() - build_info.start;
+
+        // Hide elapsed if under 1s; it is not meaningful at that resolution.
+        if self.config.show_timers && elapsed > 1.0 {
+          s.push_str(&self.colored(
+            &format!(" {} {}", ic.clock, self.format_duration(elapsed)),
+            Color::DarkGrey,
+          ));
+          // Show the total build estimate after elapsed.
+          if let Some(estimate_secs) = build_info.estimate {
+            s.push_str(&self.colored(
+              &format!(
+                " ({} {})",
+                ic.estimate,
+                self.format_duration(estimate_secs as f64)
+              ),
+              Color::DarkGrey,
+            ));
+          }
+        }
+      },
+      BuildStatus::Failed {
+        info: build_info,
+        fail,
+      } => {
+        // Host is shown uncolored for failed nodes.
+        if let cognos::Host::Remote(ref host_name) = build_info.host {
+          s.push_str(&format!(" on {host_name}"));
+        }
+
+        // Show failure reason.
+        let fail_str = match &fail.fail_type {
+          crate::state::FailType::BuildFailed(code) => {
+            format!(" failed with exit code {code}")
+          },
+          crate::state::FailType::Timeout => " timed out".to_string(),
+          crate::state::FailType::HashMismatch => " hash mismatch".to_string(),
+          crate::state::FailType::DependencyFailed => {
+            " dependency failed".to_string()
+          },
+          crate::state::FailType::Unknown => " failed".to_string(),
+        };
+        s.push_str(&self.colored(&fail_str, Color::DarkRed));
+
+        // Show build phase if known.
+        if let Some(activity_id) = build_info.activity_id
+          && let Some(activity) = state.activities.get(&activity_id)
+          && let Some(phase) = &activity.phase
+        {
+          s.push_str(&self.colored(&format!(" in {phase}"), Color::DarkGrey));
+        }
+
+        // Hide elapsed if under 1s.
+        if self.config.show_timers {
+          let duration = fail.at - build_info.start;
+          if duration > 1.0 {
+            s.push_str(&self.colored(
+              &format!(" {} {}", ic.clock, self.format_duration(duration)),
+              Color::DarkGrey,
+            ));
+          }
+        }
+      },
+      BuildStatus::Built {
+        info: build_info,
+        end,
+      } => {
+        // Show host (if remote)
+        if let cognos::Host::Remote(ref host_name) = build_info.host {
+          s.push_str(
+            &self.colored(&format!(" on {host_name}"), Color::DarkGrey),
+          );
+        }
+        // Hide elapsed if under 1s.
+        if self.config.show_timers {
+          let duration = end - build_info.start;
+          if duration > 1.0 {
+            s.push_str(&self.colored(
+              &format!(" {} {}", ic.clock, self.format_duration(duration)),
+              Color::DarkGrey,
+            ));
+          }
+        }
+      },
+      BuildStatus::Planned => {
+        // Planned leaf nodes show a "waiting for ..." annotation summarising
+        // the unfinished work below them.
+        if is_leaf {
+          let waiting = self.format_waiting_summary(&info.dependency_summary);
+          if !waiting.is_empty() {
+            s.push_str(
+              &self
+                .colored(&format!(" waiting for {waiting}"), Color::DarkGrey),
+            );
+          }
+        }
+      },
+      BuildStatus::Unknown => {},
+    }
+
+    s
+  }
+
+  /// Render a compact summary of pending/running activity for a planned leaf
+  /// node.
+  fn format_waiting_summary(
+    &self,
+    summary: &crate::state::DependencySummary,
+  ) -> String {
+    let ic = self.ic();
+    let mut parts: Vec<String> = Vec::new();
+
+    let failed = summary.failed_builds.len();
+    if failed > 0 {
+      parts.push(
+        self.colored(&format!("{} {}", ic.failed, failed), Color::DarkRed),
+      );
+    }
+
+    let running = summary.running_builds.len();
+    if running > 0 {
+      parts.push(
+        self.colored(&format!("{} {}", ic.running, running), Color::DarkYellow),
+      );
+    }
+
+    let planned = summary.planned_builds.len();
+    if planned > 0 {
+      parts.push(
+        self.colored(&format!("{} {}", ic.planned, planned), Color::DarkBlue),
+      );
+    }
+
+    parts.join(" ")
+  }
+
+  fn get_status_icon(
+    &self,
+    status: &BuildStatus,
+  ) -> Option<(&'static str, Color)> {
     let ic = self.ic();
     match status {
-      BuildStatus::Building(_) => (ic.running, Color::DarkYellow),
-      BuildStatus::Planned => (ic.planned, Color::DarkBlue),
-      BuildStatus::Built { .. } => (ic.done, Color::DarkGreen),
-      BuildStatus::Failed { .. } => (ic.failed, Color::DarkRed),
-      BuildStatus::Unknown => ("?", Color::Grey),
+      BuildStatus::Building(_) => Some((ic.running, Color::DarkYellow)),
+      BuildStatus::Planned => Some((ic.planned, Color::DarkBlue)),
+      BuildStatus::Built { .. } => Some((ic.done, Color::DarkGreen)),
+      BuildStatus::Failed { .. } => Some((ic.failed, Color::DarkRed)),
+      // Unknown nodes have no icon.
+      BuildStatus::Unknown => None,
     }
   }
 
@@ -1379,8 +1627,21 @@ impl<W: Write> Display<W> {
     }
   }
 
-  /// Render an icon + count matching NOM's `nonZeroBold` semantics:
-  /// the icon keeps its active colour always; the number is bold when > 0.
+  /// Render text in the given color AND bold weight.
+  fn colored_bold(&self, text: &str, color: Color) -> String {
+    if self.config.use_color {
+      format!(
+        "{}\x1b[1m{}\x1b[0m{}",
+        SetForegroundColor(color),
+        text,
+        ResetColor
+      )
+    } else {
+      text.to_string()
+    }
+  }
+
+  /// Render an icon + count
   fn count_colored(&self, icon: &str, n: usize, active_color: Color) -> String {
     let icon_s = self.colored(icon, active_color);
     let num_s = if n > 0 && self.config.use_color {
@@ -1391,7 +1652,7 @@ impl<W: Write> Display<W> {
     format!("{icon_s} {num_s}")
   }
 
-  /// Render a count as bold-when-nonzero with no icon, matching the number
+  /// Render a count as bold-when-nonzero with no icon. This matches the number
   /// semantics of `count_colored` for use in the dashboard summary row.
   fn num_str(&self, n: usize) -> String {
     if n > 0 && self.config.use_color {
@@ -1415,405 +1676,28 @@ impl<W: Write> Display<W> {
     if name.len() <= max_len {
       name.to_string()
     } else {
-      format!("{}…", &name[..max_len - 1])
+      format!("{}…", &name[..max_len.saturating_sub(1)])
     }
   }
 
-  fn format_bytes(&self, bytes: u64, total: u64) -> String {
-    let format_size = |b: u64| -> String {
-      if b < 1024 {
-        format!("{b} B")
-      } else if b < 1024 * 1024 {
-        format!("{:.1} KB", b as f64 / 1024.0)
-      } else if b < 1024 * 1024 * 1024 {
-        format!("{:.1} MB", b as f64 / (1024.0 * 1024.0))
-      } else {
-        format!("{:.1} GB", b as f64 / (1024.0 * 1024.0 * 1024.0))
-      }
-    };
-
-    if total > 0 {
-      let percent = (bytes as f64 / total as f64) * 100.0;
-      format!(
-        "{}/{} ({:.0}%)",
-        format_size(bytes),
-        format_size(total),
-        percent
-      )
+  fn format_bytes(&self, transferred: u64, total: u64) -> String {
+    let pct = if total > 0 {
+      (transferred as f64 / total as f64 * 100.0) as u64
     } else {
-      format_size(bytes)
-    }
+      0
+    };
+    format_size(total) + &self.colored(&format!(" ({pct}%)"), Color::DarkGrey)
   }
 }
 
-#[cfg(test)]
-mod tests {
-  use super::*;
-  use crate::{
-    icons,
-    state::{BuildInfo, CompletedBuildInfo, FailType, FailedBuildInfo, State},
-    types::{DisplayFormat, LegendStyle, SummaryStyle},
-  };
-
-  fn render_to_string(
-    format: DisplayFormat,
-    use_color: bool,
-    legend: LegendStyle,
-    summary: SummaryStyle,
-    state: &State,
-    final_render: bool,
-  ) -> String {
-    let mut buf = Vec::new();
-    {
-      let mut d = Display::new(&mut buf, DisplayConfig {
-        show_timers: false,
-        max_tree_depth: 10,
-        max_visible_lines: 100,
-        use_color,
-        format,
-        legend_style: legend,
-        summary_style: summary,
-        icons: &icons::UNICODE,
-      })
-      .unwrap();
-      if final_render {
-        d.render_final(state).unwrap();
-      } else {
-        d.render(state, &[]).unwrap();
-      }
-    }
-    String::from_utf8_lossy(&buf).into_owned()
-  }
-
-  fn state_running() -> State {
-    let mut s = State::new();
-    s.full_summary.running_builds.insert(0, BuildInfo {
-      start:       0.0,
-      host:        cognos::Host::Localhost,
-      estimate:    None,
-      activity_id: None,
-    });
-    s
-  }
-
-  fn state_completed() -> State {
-    let mut s = State::new();
-    s.full_summary
-      .completed_builds
-      .insert(0, CompletedBuildInfo {
-        start: 0.0,
-        end:   1.0,
-        host:  cognos::Host::Localhost,
-      });
-    s
-  }
-
-  fn state_failed() -> State {
-    let mut s = State::new();
-    s.full_summary.failed_builds.insert(0, FailedBuildInfo {
-      start:     0.0,
-      end:       1.0,
-      host:      cognos::Host::Localhost,
-      fail_type: FailType::BuildFailed(-1),
-    });
-    s
-  }
-
-  // --- Dashboard: color-on emits ANSI, color-off is clean ---
-
-  #[test]
-  fn dashboard_color_on_emits_ansi() {
-    let out = render_to_string(
-      DisplayFormat::Dashboard,
-      true,
-      LegendStyle::Table,
-      SummaryStyle::Concise,
-      &state_running(),
-      false,
-    );
-    assert!(
-      out.contains('\x1b'),
-      "expected ANSI escapes in colored dashboard output"
-    );
-  }
-
-  #[test]
-  fn dashboard_color_off_no_ansi() {
-    let out = render_to_string(
-      DisplayFormat::Dashboard,
-      false,
-      LegendStyle::Table,
-      SummaryStyle::Concise,
-      &state_running(),
-      false,
-    );
-    assert!(
-      !out.contains('\x1b'),
-      "expected no ANSI escapes in plain dashboard output"
-    );
-  }
-
-  // --- Dashboard: status label reflects build state ---
-
-  #[test]
-  fn dashboard_running_shows_building() {
-    let out = render_to_string(
-      DisplayFormat::Dashboard,
-      false,
-      LegendStyle::Table,
-      SummaryStyle::Concise,
-      &state_running(),
-      false,
-    );
-    assert!(
-      out.contains("building"),
-      "expected 'building' label for running state"
-    );
-  }
-
-  #[test]
-  fn dashboard_completed_shows_done() {
-    let out = render_to_string(
-      DisplayFormat::Dashboard,
-      false,
-      LegendStyle::Table,
-      SummaryStyle::Concise,
-      &state_completed(),
-      false,
-    );
-    assert!(
-      out.contains("done"),
-      "expected 'done' label when all builds completed"
-    );
-  }
-
-  #[test]
-  fn dashboard_failed_final_shows_failed() {
-    let out = render_to_string(
-      DisplayFormat::Dashboard,
-      false,
-      LegendStyle::Table,
-      SummaryStyle::Concise,
-      &state_failed(),
-      true,
-    );
-    assert!(
-      out.contains("failed"),
-      "expected 'failed' label in final dashboard with failures"
-    );
-  }
-
-  // --- Dashboard: structural content ---
-
-  #[test]
-  fn dashboard_empty_state_no_graph_header() {
-    let out = render_to_string(
-      DisplayFormat::Dashboard,
-      true,
-      LegendStyle::Table,
-      SummaryStyle::Concise,
-      &State::new(),
-      false,
-    );
-    assert!(
-      !out.contains("BUILD GRAPH"),
-      "expected no BUILD GRAPH header for empty state"
-    );
-  }
-
-  #[test]
-  fn dashboard_nonempty_state_has_graph_header() {
-    let out = render_to_string(
-      DisplayFormat::Dashboard,
-      false,
-      LegendStyle::Table,
-      SummaryStyle::Concise,
-      &state_running(),
-      false,
-    );
-    assert!(
-      out.contains("BUILD GRAPH"),
-      "expected BUILD GRAPH header in dashboard output"
-    );
-  }
-
-  // --- Format × color permutations (no-panic) ---
-
-  #[test]
-  fn all_formats_color_on_render_and_final_without_panic() {
-    let state = state_running();
-    for format in [
-      DisplayFormat::Tree,
-      DisplayFormat::Plain,
-      DisplayFormat::Dashboard,
-    ] {
-      render_to_string(
-        format,
-        true,
-        LegendStyle::Table,
-        SummaryStyle::Concise,
-        &state,
-        false,
-      );
-      render_to_string(
-        format,
-        true,
-        LegendStyle::Table,
-        SummaryStyle::Concise,
-        &state,
-        true,
-      );
-    }
-  }
-
-  #[test]
-  fn all_formats_color_off_render_and_final_without_panic() {
-    let state = state_running();
-    for format in [
-      DisplayFormat::Tree,
-      DisplayFormat::Plain,
-      DisplayFormat::Dashboard,
-    ] {
-      render_to_string(
-        format,
-        false,
-        LegendStyle::Table,
-        SummaryStyle::Concise,
-        &state,
-        false,
-      );
-      render_to_string(
-        format,
-        false,
-        LegendStyle::Table,
-        SummaryStyle::Concise,
-        &state,
-        true,
-      );
-    }
-  }
-
-  // --- Legend style × color permutations ---
-
-  #[test]
-  fn legend_compact_color_permutations() {
-    let state = state_completed();
-    for use_color in [true, false] {
-      render_to_string(
-        DisplayFormat::Tree,
-        use_color,
-        LegendStyle::Compact,
-        SummaryStyle::Concise,
-        &state,
-        true,
-      );
-    }
-  }
-
-  #[test]
-  fn legend_table_color_permutations() {
-    let state = state_completed();
-    for use_color in [true, false] {
-      render_to_string(
-        DisplayFormat::Tree,
-        use_color,
-        LegendStyle::Table,
-        SummaryStyle::Concise,
-        &state,
-        true,
-      );
-    }
-  }
-
-  #[test]
-  fn legend_verbose_color_permutations() {
-    let state = state_completed();
-    for use_color in [true, false] {
-      render_to_string(
-        DisplayFormat::Tree,
-        use_color,
-        LegendStyle::Verbose,
-        SummaryStyle::Concise,
-        &state,
-        true,
-      );
-    }
-  }
-
-  // --- Summary style × format permutations ---
-
-  #[test]
-  fn summary_concise_all_formats() {
-    let state = state_completed();
-    for format in [
-      DisplayFormat::Tree,
-      DisplayFormat::Plain,
-      DisplayFormat::Dashboard,
-    ] {
-      render_to_string(
-        format,
-        true,
-        LegendStyle::Table,
-        SummaryStyle::Concise,
-        &state,
-        true,
-      );
-    }
-  }
-
-  #[test]
-  fn summary_table_all_formats() {
-    let state = state_completed();
-    for format in [
-      DisplayFormat::Tree,
-      DisplayFormat::Plain,
-      DisplayFormat::Dashboard,
-    ] {
-      render_to_string(
-        format,
-        true,
-        LegendStyle::Table,
-        SummaryStyle::Table,
-        &state,
-        true,
-      );
-    }
-  }
-
-  #[test]
-  fn summary_full_all_formats() {
-    let state = state_completed();
-    for format in [
-      DisplayFormat::Tree,
-      DisplayFormat::Plain,
-      DisplayFormat::Dashboard,
-    ] {
-      render_to_string(
-        format,
-        true,
-        LegendStyle::Table,
-        SummaryStyle::Full,
-        &state,
-        true,
-      );
-    }
-  }
-
-  // --- Dashboard final: all build-state × color permutations ---
-
-  #[test]
-  fn dashboard_final_build_state_color_permutations() {
-    for use_color in [true, false] {
-      for state in [state_running(), state_completed(), state_failed()] {
-        render_to_string(
-          DisplayFormat::Dashboard,
-          use_color,
-          LegendStyle::Table,
-          SummaryStyle::Concise,
-          &state,
-          true,
-        );
-      }
-    }
+fn format_size(bytes: u64) -> String {
+  if bytes < 1024 {
+    format!("{bytes} B")
+  } else if bytes < 1024 * 1024 {
+    format!("{:.1} KiB", bytes as f64 / 1024.0)
+  } else if bytes < 1024 * 1024 * 1024 {
+    format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
+  } else {
+    format!("{:.1} GiB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
   }
 }

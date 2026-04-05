@@ -16,7 +16,7 @@ pub struct Icons {
   pub summary:  &'static str,
 }
 
-/// Standard Unicode icons — always available, no special font required.
+/// Standard Unicode icons are always available, no special font required.
 pub static UNICODE: Icons = Icons {
   running:  "⏵",
   done:     "✔",
@@ -29,21 +29,21 @@ pub static UNICODE: Icons = Icons {
   summary:  "∑",
 };
 
-/// Nerd Fonts icons (v3 codepoints).
+/// Nerd Fonts icons.
 ///
-/// Requires a Nerd Font–patched terminal font.  Detected automatically via
+/// Requires a Nerd Font–patched terminal font. Detected automatically via
 /// the `has-nerd-font` crate, but can be forced with `NERD_FONTS=1` (or
 /// disabled with `NERD_FONTS=0`).
 pub static NERD: Icons = Icons {
-  running:  "\u{f144}", // nf-fa-play
-  done:     "\u{f00c}", // nf-fa-check
-  planned:  "\u{f04c}", // nf-fa-pause
-  failed:   "\u{f071}", // nf-fa-exclamation-triangle
-  download: "\u{f019}", // nf-fa-download
-  upload:   "\u{f093}", // nf-fa-upload
-  clock:    "\u{f017}", // nf-fa-clock-o
-  estimate: "\u{f252}", // nf-fa-hourglass-half
-  summary:  "∑",
+  running:  "\u{f04b}",  // 
+  done:     "\u{f00c}",  // 
+  planned:  "\u{f04c}",  // 
+  failed:   "\u{f071}",  // 
+  download: "\u{f063}",  // 
+  upload:   "\u{f062}",  // 
+  clock:    "\u{f1da}",  // 
+  estimate: "\u{f252}",  // 
+  summary:  "\u{f04a0}", // 󰒠
 };
 
 /// Detect the best icon set for the current terminal session.
