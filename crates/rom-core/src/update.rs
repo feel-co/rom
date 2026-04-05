@@ -707,12 +707,17 @@ fn handle_post_build_hook_start(
 }
 
 fn handle_transfer_stop(state: &mut State, id: Id, now: f64) -> bool {
-  // Check downloads
-  for (path_id, transfer_info) in &state.full_summary.running_downloads.clone()
+  // Check downloads; find the matching path_id without cloning the entire map
+  if let Some(path_id) = state
+    .full_summary
+    .running_downloads
+    .iter()
+    .find(|(_, transfer_info)| transfer_info.activity_id == id)
+    .map(|(&id, _)| id)
   {
-    if transfer_info.activity_id == id {
-      state.full_summary.running_downloads.remove(path_id);
+    let transfer_info = state.full_summary.running_downloads.remove(&path_id);
 
+    if let Some(transfer_info) = transfer_info {
       let completed = CompletedTransferInfo {
         start:       transfer_info.start,
         end:         now,
@@ -723,16 +728,22 @@ fn handle_transfer_stop(state: &mut State, id: Id, now: f64) -> bool {
       state
         .full_summary
         .completed_downloads
-        .insert(*path_id, completed);
-      return true;
+        .insert(path_id, completed);
     }
+    return true;
   }
 
   // Check uploads
-  for (path_id, transfer_info) in &state.full_summary.running_uploads.clone() {
-    if transfer_info.activity_id == id {
-      state.full_summary.running_uploads.remove(path_id);
+  if let Some(path_id) = state
+    .full_summary
+    .running_uploads
+    .iter()
+    .find(|(_, transfer_info)| transfer_info.activity_id == id)
+    .map(|(&id, _)| id)
+  {
+    let transfer_info = state.full_summary.running_uploads.remove(&path_id);
 
+    if let Some(transfer_info) = transfer_info {
       let completed = CompletedTransferInfo {
         start:       transfer_info.start,
         end:         now,
@@ -743,9 +754,9 @@ fn handle_transfer_stop(state: &mut State, id: Id, now: f64) -> bool {
       state
         .full_summary
         .completed_uploads
-        .insert(*path_id, completed);
-      return true;
+        .insert(path_id, completed);
     }
+    return true;
   }
 
   false
