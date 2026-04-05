@@ -5,8 +5,8 @@ real-time dependency graph. Think of it as `NOM`, but written in Rust with a
 focus on speed, configurability, and showing you exactly what Nix is doing with
 your builds.
 
-Built with a modular parser under [`./cognos`](./cognos) that handles the ATerm
-and internal-json log formats from Nix.
+Built with a modular parser under [`crates/cognos`](crates/cognos) that handles
+the ATerm and internal-json log formats from Nix.
 
 > [!NOTE]
 > ROM is still under active development. Things may break, output formats may
@@ -19,9 +19,11 @@ ROM is primarily designed to wrap the Nix installation on your system. As such,
 the _recommended_ interface is using `rom build`, `rom shell` and `rom develop`
 for their Nix counterparts.
 
+<!--markdownlint-disable MD013-->
+
 ```terminal
 $ rom -h
-Rust Output Monitor - A Nix build output monitor
+ROM - A Nix build output monitor
 
 Usage: rom [OPTIONS] [COMMAND]
 
@@ -32,19 +34,22 @@ Commands:
   help     Print this message or the help of the given subcommand(s)
 
 Options:
-      --json             Parse JSON output from nix --log-format=internal-json
-      --silent           Minimal output
-      --format <FORMAT>  Output format: tree, plain [default: tree]
-      --legend <LEGEND>  Legend display style: compact, table, verbose [default: table]
-  -h, --help             Print help
-  -V, --version          Print version
+      --json                     Parse JSON output from nix --log-format=internal-json
+      --silent                   Minimal output
+      --format <FORMAT>          Output format: tree, plain, dashboard [default: tree]
+      --legend <LEGEND>          Legend display style: compact, table, verbose [default: table]
+      --summary <SUMMARY>        Summary display style: concise, table, full [default: concise]
+      --log-prefix <LOG_PREFIX>  Log prefix style: short, full, none [default: short]
+      --log-lines <LOG_LINES>    Maximum number of log lines to display
+      --platform <PLATFORM>      Nix-family evaluator to use. Auto-detected by default
+  -v...                          Increase verbosity; controls nix log level and rom diagnostic output. Repeatable: -v (info), -vv (debug), -vvv (trace)
+  -h, --help                     Print help
+  -V, --version                  Print version
 ```
 
-ROM is primarily designed to wrap the Nix installation on your system. As such,
-the _recommended_ interface is using `rom build`, `rom shell` and `rom develop`
-for their Nix counterparts. The CLI of ROM is similar to NOM, the Haskell
-utility ROM is designed after. To build a package with Nix, let's say
-`pkgs.hello`, you can do:
+<!--markdownlint-enable MD013-->
+
+To build a package with Nix, let's say `pkgs.hello`, you can do:
 
 ```terminal
 $ rom build nixpkgs#hello
@@ -80,7 +85,7 @@ Hello, world!
 
 **Q**: If "NOM" is nix-output-monitor, what does "ROM stand for"?
 
-**A**: It doesn't stand for anything, I named it _rom_ beceuse it sounds like
+**A**: It doesn't stand for anything, I named it _rom_ because it sounds like
 _rum_. I like rum. However you may choose to name it "rusty output monitor" or
 "raf's output monitor" at your convenience. I don't know, be creative.
 
@@ -95,11 +100,15 @@ easier.
 The ATerm and internal-json log parser was inspired, and mostly copied from
 <https://git.atagen.co/atagen/nous> with consolidation, cleaner repo layout, and
 a better separation of concerns. rom builds on the ideas previously pondered by
-nous, and provides a subcrate under [`./cognos`](./cognos) for easy parsing.
-Thank you Atagen for letting me play with the idea.
+nous, and provides a subcrate under [`crates/cognos`](crates/cognos) for easy
+parsing. Thank you Atagen for letting me play with the idea.
 
 ## License
+
+<!--markdownlint-disable MD059-->
 
 This project is made available under Mozilla Public License (MPL) version 2.0.
 See [LICENSE](LICENSE) for more details on the exact conditions. An online copy
 is provided [here](https://www.mozilla.org/en-US/MPL/2.0/).
+
+<!--markdownlint-enable MD059-->

@@ -59,7 +59,7 @@ Summary     │ jobs=1  ok=1  failed=0  total=8.1s
 
 ## Legend Styles
 
-Legend styles control how thee build statistics are displayed at the bottom of
+Legend styles control how the build statistics are displayed at the bottom of
 the screen. At this moment they only affect the **tree format**.
 
 1. Table Style
@@ -105,5 +105,5 @@ All formats use consistent icons:
 | ✗    | Failed/Error      | Red    |
 | ⏸    | Planned/Waiting   | Grey   |
 | ⏱    | Time/Duration     | Grey   |
-| ↓    | Downloading       | Blue   |
-| ↑    | Uploading         | Green  |
+| ↓    | Downloading       | Yellow |
+| ↑    | Uploading         | Yellow |
