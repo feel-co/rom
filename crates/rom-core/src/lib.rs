@@ -1,10 +1,12 @@
 //! ROM core - monitoring engine, state management, display, and build cache
 pub mod cache;
+pub mod debug_log;
 pub mod display;
 pub mod error;
 pub mod icons;
 pub mod monitor;
 pub mod state;
+pub mod term;
 pub mod types;
 pub mod update;
 

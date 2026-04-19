@@ -13,26 +13,72 @@ license = "EUPL-1.2"
 rom-core = { path = "./crates/rom-core" }
 cognos = { path = "./crates/cognos" }
 
-anyhow = "1.0.102"
 clap = { version = "4.6.0", features = ["derive"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 serde_repr = "0.1.20"
-crossterm = "0.29.0"
-ratatui = "0.30.0"
 indexmap = { version = "2.13.1", features = ["serde"] }
-csv = "1.4.0"
-chrono = "0.4.44"
 thiserror = "2.0.18"
-tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
-eyre = "0.6.12"
-dirs = "6.0.0"
 tempfile = "3.27.0"
-has-nerd-font = "0.20260228.0"
+
+[workspace.dependencies.libc]
+version = "0.2"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+# Noisy or opinionated pedantic lints we intentionally allow.
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+module_name_repetitions = "allow"
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+cast_precision_loss = "allow"
+cast_sign_loss = "allow"
+cast_lossless = "allow"
+too_many_lines = "allow"
+struct_excessive_bools = "allow"
+unreadable_literal = "allow"
+similar_names = "allow"
+redundant_closure_for_method_calls = "allow"
+must_use_candidate = "allow"
+return_self_not_must_use = "allow"
+significant_drop_tightening = "allow"
+option_if_let_else = "allow"
+needless_pass_by_value = "allow"
+single_match_else = "allow"
+match_wildcard_for_single_variants = "allow"
+missing_const_for_fn = "allow"
+manual_let_else = "allow"
+map_unwrap_or = "allow"
+unused_self = "allow"
+unnecessary_wraps = "allow"
+redundant_else = "allow"
+use_self = "allow"
+items_after_statements = "allow"
+if_not_else = "allow"
+fn_params_excessive_bools = "allow"
+branches_sharing_code = "allow"
+unnecessary_box_returns = "allow"
+future_not_send = "allow"
+or_fun_call = "allow"
+new_without_default = "allow"
+from_str_radix_10 = "allow"
+redundant_pub_crate = "allow"
+wildcard_imports = "allow"
+needless_raw_string_hashes = "allow"
+doc_markdown = "allow"
+match_same_arms = "allow"
+should_implement_trait = "allow"
+format_push_string = "allow"
+too_many_arguments = "allow"
+too_long_first_doc_paragraph = "allow"
+case_sensitive_file_extension_comparisons = "allow"
+needless_collect = "allow"
 
 [profile.release]
-opt-level = 3
-lto = true
+opt-level = "s"
+lto = "fat"
 codegen-units = 1
 strip = true
+panic = "abort"

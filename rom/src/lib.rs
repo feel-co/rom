@@ -22,7 +22,9 @@ pub mod cli {
 
 /// Run the CLI application with the provided arguments.
 ///
-/// This is the main entry point for the CLI application.
-pub fn run() -> eyre::Result<()> {
+/// # Errors
+///
+/// Propagates I/O, parse, and build-failure errors from the CLI layer.
+pub fn run() -> Result<()> {
   rom_cli::run()
 }

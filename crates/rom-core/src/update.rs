@@ -8,10 +8,9 @@ use cognos::{
   ResultType,
   Verbosity,
 };
-use tracing::{debug, trace};
-
 use crate::{
   cache::BuildReportCache,
+  debug,
   state::{
     ActivityProgress,
     ActivityStatus,
@@ -35,15 +34,12 @@ use crate::{
 /// Process a nix JSON message and update state
 pub fn process_message(state: &mut State, action: Actions) -> bool {
   let now = current_time();
-  let mut changed = false;
-
-  // Mark that we've received input
-  if state.progress_state == ProgressState::JustStarted {
+  let mut changed = state.progress_state == ProgressState::JustStarted;
+  if changed {
     state.progress_state = ProgressState::InputReceived;
-    changed = true;
   }
 
-  trace!("Processing action: {:?}", action);
+  debug!("Processing action: {:?}", action);
 
   match action {
     Actions::Start {
@@ -134,9 +130,10 @@ fn handle_start(
   };
 
   // Track parent-child relationships for dependency tree
-  if changed && activity_u8 == 105 && parent_id.is_some() {
-    let parent_act_id = parent_id.unwrap();
-
+  if changed
+    && activity_u8 == 105
+    && let Some(parent_act_id) = parent_id
+  {
     // Find parent and child derivation IDs
     let parent_drv_id = find_derivation_by_activity(state, parent_act_id);
     let child_drv_id = find_derivation_by_activity(state, id);
@@ -1039,6 +1036,112 @@ pub fn maintain_state(state: &mut State, _now: f64) {
     state.forest_roots = sorted_roots;
 
     state.touched_ids.clear();
+  }
+}
+
+/// Recompute every derivation's transitive dependency summary via Kahn's
+/// algorithm — children processed before parents — so each node's summary
+/// is the merged total of its own status plus every descendant's.
+///
+/// This replaces the need for per-change parent propagation: it runs in
+/// `O(V + E)` and is correct under arbitrary diamond dependencies.
+pub fn summaries(state: &mut State) {
+  use std::collections::{HashMap, VecDeque};
+
+  use crate::state::DependencySummary;
+
+  let ids: Vec<DerivationId> =
+    state.derivation_infos.keys().copied().collect();
+
+  // in_degree[node] = number of child derivations this node depends on.
+  // Start with all zero; we drain by popping nodes whose children are all
+  // processed.
+  let mut pending: HashMap<DerivationId, usize> = HashMap::with_capacity(ids.len());
+  for id in &ids {
+    let n = state
+      .derivation_infos
+      .get(id)
+      .map_or(0, |info| info.input_derivations.len());
+    pending.insert(*id, n);
+  }
+
+  let mut queue: VecDeque<DerivationId> = pending
+    .iter()
+    .filter(|&(_, n)| *n == 0)
+    .map(|(id, _)| *id)
+    .collect();
+  let mut processed = 0usize;
+
+  while let Some(id) = queue.pop_front() {
+    processed += 1;
+    // Own contribution, plus merge of each child's summary.
+    let Some(info) = state.derivation_infos.get(&id) else {
+      continue;
+    };
+    let children: Vec<DerivationId> =
+      info.input_derivations.iter().map(|i| i.derivation).collect();
+    let status = info.build_status.clone();
+
+    let mut merged = DependencySummary::default();
+    merged.update_derivation(id, &status);
+    for child_id in &children {
+      if let Some(child) = state.derivation_infos.get(child_id) {
+        merged.merge(&child.dependency_summary);
+      }
+    }
+    if let Some(info_mut) = state.derivation_infos.get_mut(&id) {
+      info_mut.dependency_summary = merged;
+    }
+
+    // Decrement each parent's pending count; enqueue when it hits zero.
+    let parents: Vec<DerivationId> = state
+      .derivation_infos
+      .get(&id)
+      .map(|info| info.derivation_parents.iter().copied().collect())
+      .unwrap_or_default();
+    for parent_id in parents {
+      if let Some(n) = pending.get_mut(&parent_id)
+        && *n > 0
+      {
+        // Only decrement when there's credit to consume. A stale extra
+        // backlink that points at an already-processed parent would
+        // otherwise re-enqueue it forever via saturating_sub(1).
+        *n -= 1;
+        if *n == 0 {
+          queue.push_back(parent_id);
+        }
+      }
+    }
+  }
+
+  // Topological completeness check. A well-formed nix derivation graph is
+  // a DAG, so every node should have been processed. If any weren't — a
+  // cycle slipped in, or `derivation_parents` got out of sync with
+  // `input_derivations` — fall back to computing their own-contribution
+  // summary so the rendered state can't silently display stale aggregate
+  // counts from a prior pass.
+  if processed < ids.len() {
+    debug!(
+      "summaries: {} of {} derivations left unprocessed (cycle or stale \
+       backlinks); falling back to own-contribution only",
+      ids.len() - processed,
+      ids.len()
+    );
+    for id in ids {
+      if pending.get(&id).copied().unwrap_or(0) > 0 {
+        let status = state
+          .derivation_infos
+          .get(&id)
+          .map(|info| info.build_status.clone());
+        if let Some(status) = status {
+          let mut own = DependencySummary::default();
+          own.update_derivation(id, &status);
+          if let Some(info_mut) = state.derivation_infos.get_mut(&id) {
+            info_mut.dependency_summary = own;
+          }
+        }
+      }
+    }
   }
 }
 

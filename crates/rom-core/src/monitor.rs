@@ -5,9 +5,9 @@ use std::{
 };
 
 use cognos::Host;
-use tracing::debug;
 
 use crate::{
+  debug,
   cache::BuildReportCache,
   display::{Display, DisplayConfig},
   error::{Result, RomError},
@@ -155,7 +155,7 @@ impl<W: Write> Monitor<W> {
         },
         Err(e) => {
           // Log parsing errors but don't fail
-          tracing::debug!("Failed to parse JSON message: {}", e);
+          debug!("Failed to parse JSON message: {}", e);
           Ok(false)
         },
       }

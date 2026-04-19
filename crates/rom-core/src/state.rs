@@ -1,22 +1,94 @@
 //! State management for ROM
 use std::{
   collections::{HashMap, HashSet},
+  fmt,
+  marker::PhantomData,
   path::PathBuf,
   time::{Duration, SystemTime},
 };
 
 pub use cognos::ProgressState;
-use cognos::{Host, Id, OutputName};
+use cognos::{Host, OutputName};
 use indexmap::IndexMap;
 
+/// Phantom tag for derivation ids.
+#[derive(Debug)]
+pub struct DerivationTag;
+
+/// Phantom tag for store path ids.
+#[derive(Debug)]
+pub struct StorePathTag;
+
+/// Type-safe arena index. Distinct tags (`DerivationTag`, `StorePathTag`)
+/// make it a compile error to pass a derivation id where a store path id
+/// is expected, or vice versa.
+pub struct ArenaId<T> {
+  idx:  u32,
+  _tag: PhantomData<fn() -> T>,
+}
+
+impl<T> ArenaId<T> {
+  #[must_use]
+  pub const fn new(idx: u32) -> Self {
+    Self {
+      idx,
+      _tag: PhantomData,
+    }
+  }
+
+  #[must_use]
+  pub const fn as_u32(self) -> u32 {
+    self.idx
+  }
+}
+
+// Manual impls because `PhantomData<fn() -> T>` blocks auto-derive.
+impl<T> Clone for ArenaId<T> {
+  fn clone(&self) -> Self {
+    *self
+  }
+}
+impl<T> Copy for ArenaId<T> {}
+impl<T> PartialEq for ArenaId<T> {
+  fn eq(&self, other: &Self) -> bool {
+    self.idx == other.idx
+  }
+}
+impl<T> Eq for ArenaId<T> {}
+impl<T> std::hash::Hash for ArenaId<T> {
+  fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
+    self.idx.hash(h);
+  }
+}
+impl<T> PartialOrd for ArenaId<T> {
+  fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    Some(self.cmp(other))
+  }
+}
+impl<T> Ord for ArenaId<T> {
+  fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    self.idx.cmp(&other.idx)
+  }
+}
+impl<T> fmt::Debug for ArenaId<T> {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    write!(f, "{}", self.idx)
+  }
+}
+impl<T> fmt::Display for ArenaId<T> {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    write!(f, "{}", self.idx)
+  }
+}
+
 /// Unique identifier for store paths
-pub type StorePathId = usize;
+pub type StorePathId = ArenaId<StorePathTag>;
 
 /// Unique identifier for derivations
-pub type DerivationId = usize;
+pub type DerivationId = ArenaId<DerivationTag>;
 
-/// Unique identifier for activities
-pub type ActivityId = Id;
+/// Unique identifier for activities (reused from the nix JSON protocol).
+pub type ActivityId = cognos::Id;
 
 /// Store path representation
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -347,8 +419,8 @@ pub struct State {
   pub build_platform:   Option<String>,
   pub evaluation_state: EvalInfo,
   pub builds_activity:  Option<ActivityId>,
-  next_store_path_id:   StorePathId,
-  next_derivation_id:   DerivationId,
+  next_store_path_id:   u32,
+  next_derivation_id:   u32,
 }
 
 impl Default for State {
@@ -398,7 +470,7 @@ impl State {
       return id;
     }
 
-    let id = self.next_store_path_id;
+    let id = StorePathId::new(self.next_store_path_id);
     self.next_store_path_id += 1;
 
     self.store_path_infos.insert(id, StorePathInfo {
@@ -419,7 +491,7 @@ impl State {
       return id;
     }
 
-    let id = self.next_derivation_id;
+    let id = DerivationId::new(self.next_derivation_id);
     self.next_derivation_id += 1;
 
     self.derivation_infos.insert(id, DerivationInfo {
@@ -442,13 +514,14 @@ impl State {
   /// Populate derivation dependencies by parsing its .drv file
   pub fn populate_derivation_dependencies(&mut self, drv_id: DerivationId) {
     use cognos::aterm;
-    use tracing::debug;
+
+    use crate::debug;
 
     // platform is always set after a successful parse; use it as the
     // "already parsed" marker so leaf nodes (zero inputs) are not re-parsed.
     let already_parsed = self
       .get_derivation_info(drv_id)
-      .map_or(false, |info| info.platform.is_some());
+      .is_some_and(|info| info.platform.is_some());
 
     if already_parsed {
       debug!("Skipping already-parsed derivation {}", drv_id);

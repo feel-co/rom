@@ -10,16 +10,14 @@ cognos.workspace = true
 
 serde.workspace = true
 serde_json.workspace = true
-crossterm.workspace = true
-ratatui.workspace = true
 indexmap.workspace = true
-csv.workspace = true
-chrono.workspace = true
 thiserror.workspace = true
-tracing.workspace = true
-eyre.workspace = true
-dirs.workspace = true
-has-nerd-font.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[lints]
+workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
