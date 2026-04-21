@@ -128,7 +128,7 @@ fn render_to_string_with_timers(
 
 fn state_running() -> State {
   let mut s = State::new();
-  s.full_summary.running_builds.insert(0, BuildInfo {
+  s.full_summary.running_builds.insert(DerivationId::new(0), BuildInfo {
     start:       0.0,
     host:        cognos::Host::Localhost,
     estimate:    None,
@@ -141,7 +141,7 @@ fn state_completed() -> State {
   let mut s = State::new();
   s.full_summary
     .completed_builds
-    .insert(0, CompletedBuildInfo {
+    .insert(DerivationId::new(0), CompletedBuildInfo {
       start: 0.0,
       end:   1.0,
       host:  cognos::Host::Localhost,
@@ -151,7 +151,7 @@ fn state_completed() -> State {
 
 fn state_failed() -> State {
   let mut s = State::new();
-  s.full_summary.failed_builds.insert(0, FailedBuildInfo {
+  s.full_summary.failed_builds.insert(DerivationId::new(0), FailedBuildInfo {
     start:     0.0,
     end:       1.0,
     host:      cognos::Host::Localhost,
@@ -457,7 +457,7 @@ fn tree_empty_state_no_header() {
 #[test]
 fn tree_single_building_root_shows_header_and_name() {
   let mut state = State::new();
-  let drv_id: DerivationId = 0;
+  let drv_id = DerivationId::new(0);
   let info = make_drv_info(
     "my-package-1.0",
     BuildStatus::Building(BuildInfo {
@@ -484,7 +484,7 @@ fn tree_single_building_root_shows_header_and_name() {
 #[test]
 fn tree_planned_root_is_visible() {
   let mut state = State::new();
-  let drv_id: DerivationId = 1;
+  let drv_id = DerivationId::new(1);
   let info = make_drv_info("planned-pkg", BuildStatus::Planned);
   state.derivation_infos.insert(drv_id, info);
   state.forest_roots.push(drv_id);
@@ -500,7 +500,7 @@ fn tree_planned_root_is_visible() {
 fn tree_failed_root_is_visible() {
   use rom_core::state::{BuildFail, FailType};
   let mut state = State::new();
-  let drv_id: DerivationId = 2;
+  let drv_id = DerivationId::new(2);
   let info = make_drv_info("broken-pkg", BuildStatus::Failed {
     info: BuildInfo {
       start:       0.0,
@@ -531,7 +531,7 @@ fn tree_failed_root_is_visible() {
 #[test]
 fn tree_built_root_is_visible() {
   let mut state = State::new();
-  let drv_id: DerivationId = 3;
+  let drv_id = DerivationId::new(3);
   let info = make_drv_info("done-pkg", BuildStatus::Built {
     info: BuildInfo {
       start:       0.0,
@@ -554,7 +554,7 @@ fn tree_built_root_is_visible() {
 #[test]
 fn tree_unknown_root_without_summary_hidden() {
   let mut state = State::new();
-  let drv_id: DerivationId = 4;
+  let drv_id = DerivationId::new(4);
   let info = make_drv_info("ghost-pkg", BuildStatus::Unknown);
   state.derivation_infos.insert(drv_id, info);
   state.forest_roots.push(drv_id);
@@ -573,8 +573,8 @@ fn tree_unknown_root_with_summary_visible() {
   use rom_core::state::{DependencySummary, Derivation, DerivationInfo};
 
   let mut state = State::new();
-  let parent_id: DerivationId = 5;
-  let child_id: DerivationId = 6;
+  let parent_id = DerivationId::new(5);
+  let child_id = DerivationId::new(6);
 
   let mut summary = DependencySummary::default();
   summary.running_builds.insert(child_id, BuildInfo {
@@ -618,8 +618,8 @@ fn tree_child_above_parent_layout() {
   use rom_core::state::InputDerivation;
 
   let mut state = State::new();
-  let parent_id: DerivationId = 10;
-  let child_id: DerivationId = 11;
+  let parent_id = DerivationId::new(10);
+  let child_id = DerivationId::new(11);
 
   // Child: planned
   let child_info = make_drv_info("child-dep", BuildStatus::Planned);
@@ -669,8 +669,8 @@ fn tree_last_child_uses_top_connector() {
   use rom_core::state::InputDerivation;
 
   let mut state = State::new();
-  let parent_id: DerivationId = 20;
-  let only_child_id: DerivationId = 21;
+  let parent_id = DerivationId::new(20);
+  let only_child_id = DerivationId::new(21);
 
   let child_info = make_drv_info("only-child", BuildStatus::Planned);
   state.derivation_infos.insert(only_child_id, child_info);
@@ -709,9 +709,9 @@ fn tree_multiple_children_have_branch_and_top_connectors() {
   use rom_core::state::InputDerivation;
 
   let mut state = State::new();
-  let parent_id: DerivationId = 30;
-  let child_a_id: DerivationId = 31;
-  let child_b_id: DerivationId = 32;
+  let parent_id = DerivationId::new(30);
+  let child_a_id = DerivationId::new(31);
+  let child_b_id = DerivationId::new(32);
 
   // Both Planned, same sort priority, so order is preserved.
   let child_a = make_drv_info("alpha-dep", BuildStatus::Planned);
@@ -761,9 +761,9 @@ fn tree_sort_order_failed_before_building() {
   use rom_core::state::{BuildFail, FailType, InputDerivation};
 
   let mut state = State::new();
-  let parent_id: DerivationId = 40;
-  let building_id: DerivationId = 41;
-  let failed_id: DerivationId = 42;
+  let parent_id = DerivationId::new(40);
+  let building_id = DerivationId::new(41);
+  let failed_id = DerivationId::new(42);
 
   // Insert children: building first in insertion order, failed second
   let building_child = make_drv_info(
@@ -838,9 +838,9 @@ fn tree_planned_leaf_shows_waiting_annotation() {
   };
 
   let mut state = State::new();
-  let parent_id: DerivationId = 50;
-  let leaf_id: DerivationId = 51;
-  let blocked_by_id: DerivationId = 52;
+  let parent_id = DerivationId::new(50);
+  let leaf_id = DerivationId::new(51);
+  let blocked_by_id = DerivationId::new(52);
 
   // blocked_by_id represents something the leaf is waiting on
   let mut leaf_summary = DependencySummary::default();
@@ -919,9 +919,9 @@ fn tree_planned_non_leaf_no_waiting_annotation() {
   use rom_core::state::InputDerivation;
 
   let mut state = State::new();
-  let parent_id: DerivationId = 60;
-  let middle_id: DerivationId = 61;
-  let grandchild_id: DerivationId = 62;
+  let parent_id = DerivationId::new(60);
+  let middle_id = DerivationId::new(61);
+  let grandchild_id = DerivationId::new(62);
 
   // grandchild is a leaf
   let grandchild = make_drv_info("grandchild", BuildStatus::Planned);
@@ -970,8 +970,8 @@ fn tree_planned_non_leaf_no_waiting_annotation() {
 #[test]
 fn tree_multi_root_uses_forest_connectors() {
   let mut state = State::new();
-  let root_a_id: DerivationId = 70;
-  let root_b_id: DerivationId = 71;
+  let root_a_id = DerivationId::new(70);
+  let root_b_id = DerivationId::new(71);
 
   let info_a = make_drv_info(
     "root-a",
@@ -1015,7 +1015,7 @@ fn tree_multi_root_uses_forest_connectors() {
 fn tree_single_root_no_forest_connectors() {
   // A single root with no children produces no ┌─ connectors.
   let mut state = State::new();
-  let root_id: DerivationId = 80;
+  let root_id = DerivationId::new(80);
   let info = make_drv_info(
     "sole-root",
     BuildStatus::Building(BuildInfo {
@@ -1049,7 +1049,7 @@ fn tree_single_root_no_forest_connectors() {
 #[test]
 fn tree_color_on_emits_ansi() {
   let mut state = State::new();
-  let drv_id: DerivationId = 90;
+  let drv_id = DerivationId::new(90);
   let info = make_drv_info(
     "colored-pkg",
     BuildStatus::Building(BuildInfo {
@@ -1072,7 +1072,7 @@ fn tree_color_on_emits_ansi() {
 #[test]
 fn tree_color_off_no_ansi() {
   let mut state = State::new();
-  let drv_id: DerivationId = 91;
+  let drv_id = DerivationId::new(91);
   let info = make_drv_info(
     "plain-pkg",
     BuildStatus::Building(BuildInfo {
@@ -1097,7 +1097,7 @@ fn tree_failed_node_shows_exit_code() {
   use rom_core::state::{BuildFail, FailType};
 
   let mut state = State::new();
-  let drv_id: DerivationId = 100;
+  let drv_id = DerivationId::new(100);
   let info = make_drv_info("failing-pkg", BuildStatus::Failed {
     info: BuildInfo {
       start:       0.0,
@@ -1123,7 +1123,7 @@ fn tree_failed_node_shows_exit_code() {
 #[test]
 fn tree_building_on_remote_host_shows_host() {
   let mut state = State::new();
-  let drv_id: DerivationId = 110;
+  let drv_id = DerivationId::new(110);
   let info = make_drv_info(
     "remote-build",
     BuildStatus::Building(BuildInfo {
@@ -1148,9 +1148,9 @@ fn tree_deep_nesting_order() {
   use rom_core::state::InputDerivation;
 
   let mut state = State::new();
-  let root_id: DerivationId = 120;
-  let child_id: DerivationId = 121;
-  let grandchild_id: DerivationId = 122;
+  let root_id = DerivationId::new(120);
+  let child_id = DerivationId::new(121);
+  let grandchild_id = DerivationId::new(122);
 
   let grandchild = make_drv_info("grandchild-pkg", BuildStatus::Planned);
   state.derivation_infos.insert(grandchild_id, grandchild);
@@ -1202,8 +1202,8 @@ fn tree_cycle_does_not_panic() {
   use rom_core::state::InputDerivation;
 
   let mut state = State::new();
-  let a_id: DerivationId = 200;
-  let b_id: DerivationId = 201;
+  let a_id = DerivationId::new(200);
+  let b_id = DerivationId::new(201);
 
   // Create a cycle: a -> b -> a
   let mut a = make_drv_info(
@@ -1250,10 +1250,10 @@ fn tree_cycle_does_not_panic() {
 fn tree_unknown_node_shows_no_icon() {
   use rom_core::state::DependencySummary;
   let mut state = State::new();
-  let drv_id: DerivationId = 300;
+  let drv_id = DerivationId::new(300);
   // Populate dependency_summary so node_is_visible returns true for Unknown
   let mut dep_summary = DependencySummary::default();
-  dep_summary.planned_builds.insert(999);
+  dep_summary.planned_builds.insert(DerivationId::new(999));
   let mut info = make_drv_info("unknown-pkg", BuildStatus::Unknown);
   info.dependency_summary = dep_summary;
   state.derivation_infos.insert(drv_id, info);
@@ -1276,7 +1276,7 @@ fn tree_failed_node_shows_full_exit_code_text() {
   use rom_core::state::{BuildFail, FailType};
 
   let mut state = State::new();
-  let drv_id: DerivationId = 310;
+  let drv_id = DerivationId::new(310);
   let info = make_drv_info("exit-pkg", BuildStatus::Failed {
     info: BuildInfo {
       start:       0.0,
@@ -1309,7 +1309,7 @@ fn tree_failed_remote_host_uncolored() {
   use rom_core::state::{BuildFail, FailType};
 
   let mut state = State::new();
-  let drv_id: DerivationId = 320;
+  let drv_id = DerivationId::new(320);
   let info = make_drv_info("remote-fail-pkg", BuildStatus::Failed {
     info: BuildInfo {
       start:       0.0,
@@ -1345,7 +1345,7 @@ fn tree_failed_remote_host_uncolored() {
 #[test]
 fn tree_building_elapsed_hidden_when_under_one_second() {
   let mut state = State::new();
-  let drv_id: DerivationId = 330;
+  let drv_id = DerivationId::new(330);
   // start = current_time() so elapsed ≈ 0s (well under 1s)
   let info = make_drv_info(
     "fast-build",
@@ -1370,7 +1370,7 @@ fn tree_building_elapsed_hidden_when_under_one_second() {
 #[test]
 fn tree_building_estimate_shown_after_elapsed() {
   let mut state = State::new();
-  let drv_id: DerivationId = 340;
+  let drv_id = DerivationId::new(340);
   // Use start = 0.0 so elapsed > 1s (current_time() is well above 0)
   let info = make_drv_info(
     "estimated-build",

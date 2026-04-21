@@ -6,8 +6,7 @@ use std::{
 };
 
 use clap::Parser;
-use cognos::ProgressState;
-use tracing_subscriber::EnvFilter;
+use rom_core::{Result, RomError};
 
 #[derive(Debug, Parser)]
 #[command(name = "rom", version, about = "ROM - A Nix build output monitor")]
@@ -98,24 +97,8 @@ struct WrapperConfig {
 }
 
 /// Run the CLI application
-pub fn run() -> eyre::Result<()> {
+pub fn run() -> Result<()> {
   let cli = Cli::parse();
-
-  // Initialize tracing based on verbosity level; RUST_LOG overrides
-  let default_filter = match cli.verbose {
-    0 => "rom=warn",
-    1 => "rom=info",
-    2 => "rom=debug",
-    _ => "rom=trace",
-  };
-  tracing_subscriber::fmt()
-    .with_env_filter(
-      EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(default_filter)),
-    )
-    .with_target(false)
-    .with_writer(std::io::stderr)
-    .init();
 
   // Pre-parse typed display values before any moves of cli
   let format = rom_core::types::DisplayFormat::from_str(&cli.format);
@@ -198,18 +181,18 @@ pub fn run() -> eyre::Result<()> {
       if packages.is_empty() && json {
         let stdin = io::stdin();
         let stdout = io::stdout();
-        return Ok(rom_core::monitor_stream(
+        return rom_core::monitor_stream(
           make_config(rom_core::types::InputMode::Json),
           stdin.lock(),
           stdout.lock(),
-        )?);
+        );
       }
       if packages.is_empty() {
-        eyre::bail!(
+        return Err(RomError::config(
           "No package or flake specified for build\nUsage: rom build \
            <package> [-- <flags>]\nExample: rom build nixpkgs#hello -- \
-           --rebuild"
-        );
+           --rebuild",
+        ));
       }
       run_build_wrapper(packages, nix_flags, &cfg)?;
       Ok(())
@@ -226,18 +209,18 @@ pub fn run() -> eyre::Result<()> {
       if packages.is_empty() && json {
         let stdin = io::stdin();
         let stdout = io::stdout();
-        return Ok(rom_core::monitor_stream(
+        return rom_core::monitor_stream(
           make_config(rom_core::types::InputMode::Json),
           stdin.lock(),
           stdout.lock(),
-        )?);
+        );
       }
       if packages.is_empty() {
-        eyre::bail!(
+        return Err(RomError::config(
           "No package or flake specified for shell\nUsage: rom shell \
            <package> [-- <flags>]\nExample: rom shell nixpkgs#python3 -- \
-           --pure"
-        );
+           --pure",
+        ));
       }
       run_shell_wrapper(packages, nix_flags, &cfg)?;
       Ok(())
@@ -254,18 +237,18 @@ pub fn run() -> eyre::Result<()> {
       if packages.is_empty() && json {
         let stdin = io::stdin();
         let stdout = io::stdout();
-        return Ok(rom_core::monitor_stream(
+        return rom_core::monitor_stream(
           make_config(rom_core::types::InputMode::Json),
           stdin.lock(),
           stdout.lock(),
-        )?);
+        );
       }
       if packages.is_empty() {
-        eyre::bail!(
+        return Err(RomError::config(
           "No package or flake specified for develop\nUsage: rom develop \
            <package> [-- <flags>]\nExample: rom develop nixpkgs#hello -- \
-           --impure"
-        );
+           --impure",
+        ));
       }
       run_develop_wrapper(packages, nix_flags, &cfg)?;
       Ok(())
@@ -323,12 +306,12 @@ fn run_build_wrapper(
   packages: Vec<String>,
   nix_flags: Vec<String>,
   cfg: &WrapperConfig,
-) -> eyre::Result<()> {
+) -> Result<()> {
   if packages.is_empty() {
-    eyre::bail!(
+    return Err(RomError::config(
       "No package or flake specified for build\nUsage: rom build <package> \
-       [-- <flags>]\nExample: rom build nixpkgs#hello -- --rebuild"
-    );
+       [-- <flags>]\nExample: rom build nixpkgs#hello -- --rebuild",
+    ));
   }
 
   let mut cmd_args = vec![
@@ -351,12 +334,12 @@ fn run_shell_wrapper(
   packages: Vec<String>,
   nix_flags: Vec<String>,
   cfg: &WrapperConfig,
-) -> eyre::Result<()> {
+) -> Result<()> {
   if packages.is_empty() {
-    eyre::bail!(
+    return Err(RomError::config(
       "No package or flake specified for shell\nUsage: rom shell <package> \
-       [-- <flags>]\nExample: rom shell nixpkgs#python3 -- --pure"
-    );
+       [-- <flags>]\nExample: rom shell nixpkgs#python3 -- --pure",
+    ));
   }
 
   // First pass: monitor the build phase with --command exit
@@ -398,7 +381,7 @@ fn run_develop_wrapper(
   packages: Vec<String>,
   nix_flags: Vec<String>,
   cfg: &WrapperConfig,
-) -> eyre::Result<()> {
+) -> Result<()> {
   // First pass: monitor with --command true
   let mut monitor_args = vec![
     "develop".to_string(),
@@ -435,22 +418,49 @@ fn run_develop_wrapper(
   Ok(())
 }
 
+/// Events the main thread consumes from the input threads.
+enum Event {
+  /// Parsed nix JSON message.
+  Json(Box<cognos::Actions>),
+  /// Raw line to buffer as a log (non-JSON stderr).
+  RawLog(String),
+  /// Final stdout line (nix's summary output).
+  Stdout(String),
+  /// Input thread finished (EOF from child's stderr).
+  StderrEof,
+  /// Stdout thread finished (EOF from child's stdout).
+  StdoutEof,
+}
+
 fn run_monitored_command(
   command: &str,
   args: Vec<String>,
   cfg: &WrapperConfig,
-) -> eyre::Result<i32> {
+) -> Result<i32> {
+  use std::{
+    collections::VecDeque,
+    io::{BufRead, BufReader},
+    sync::mpsc,
+    thread,
+    time::{Duration, Instant},
+  };
+
   let silent = cfg.silent;
   let format = cfg.format;
   let legend_style = cfg.legend_style;
   let summary_style = cfg.summary_style;
   let log_prefix_style = cfg.log_prefix_style;
   let log_line_limit = cfg.log_lines;
-  use std::{
-    io::{BufRead, BufReader},
-    sync::{Arc, Mutex},
-    thread,
-    time::Duration,
+
+  // Hide the cursor while rendering; install handlers so Ctrl+C restores it
+  // before the process exits via the signal's default disposition. The
+  // RAII guard covers every early-return path (spawn failure, child.wait
+  // error, panic unwind).
+  let _cursor_guard = if silent {
+    rom_core::term::CursorGuard::noop()
+  } else {
+    rom_core::term::install_signal_handlers();
+    rom_core::term::CursorGuard::hide()
   };
 
   let mut child = Command::new(command)
@@ -458,220 +468,167 @@ fn run_monitored_command(
     .stdout(Stdio::piped())
     .stderr(Stdio::piped())
     .spawn()
-    .map_err(rom_core::error::RomError::Io)?;
+    .map_err(RomError::Io)?;
 
   let stderr = child.stderr.take().expect("Failed to capture stderr");
   let stdout = child.stdout.take().expect("Failed to capture stdout");
 
-  // Create shared state
-  let state = Arc::new(Mutex::new(rom_core::state::State::new()));
-  let state_clone = state.clone();
-  let render_state = state;
+  let (tx, rx) = mpsc::channel::<Event>();
 
-  // Track whether we're done processing
-  let processing_done = Arc::new(Mutex::new(false));
-  let processing_done_clone = processing_done.clone();
-
-  // Track start time for initial timer
-  let start_time = Arc::new(Mutex::new(rom_core::state::current_time()));
-  let start_time_clone = start_time;
-
-  // Buffer for build logs - collected and passed to Display for coordinated
-  // rendering
-  let log_buffer =
-    Arc::new(Mutex::new(std::collections::VecDeque::<String>::new()));
-  let log_buffer_clone = log_buffer.clone();
-  let log_buffer_render = log_buffer;
-
-  // Spawn thread to read and parse stderr (where nix outputs logs)
+  // stderr reader: parse @nix JSON, forward everything else as RawLog.
+  let stderr_tx = tx.clone();
   let stderr_thread = thread::spawn(move || {
-    use tracing::debug;
     let reader = BufReader::new(stderr);
-    let mut json_count = 0;
-    let mut non_json_count = 0;
-
-    for line in reader.lines().map_while(Result::ok) {
-      // Try to parse as JSON message
-      if let Some(json_line) = line.strip_prefix("@nix ") {
-        json_count += 1;
-        if let Ok(action) = serde_json::from_str::<cognos::Actions>(json_line) {
-          debug!("Parsed JSON message #{}: {:?}", json_count, action);
-
-          // Process the action first to update state
-          let mut state = state_clone.lock().unwrap();
-          let derivation_count_before = state.derivation_infos.len();
-          rom_core::update::process_message(&mut state, action.clone());
-          rom_core::update::maintain_state(
-            &mut state,
-            rom_core::state::current_time(),
-          );
-          let derivation_count_after = state.derivation_infos.len();
-
-          // Now handle build log messages after state is updated
-          // Buffer them for coordinated rendering with the display
-          match &action {
-            cognos::Actions::Message { msg, raw_msg, .. } => {
-              // Prefer raw_msg (Lix): message without ANSI escapes.
-              let display = raw_msg.as_deref().unwrap_or(msg.as_str());
-              let mut logs = log_buffer_clone.lock().unwrap();
-              logs.push_back(display.to_string());
-              if let Some(limit) = log_line_limit {
-                while logs.len() > limit {
-                  logs.pop_front();
-                }
-              }
-            },
-            cognos::Actions::Result {
-              fields,
-              result_type,
-              id,
-            } => {
-              // BuildLogLine (101) carries a single log line from the builder
-              if matches!(result_type, cognos::ResultType::BuildLogLine)
-                && !fields.is_empty()
-                && let Some(log_text) = fields[0].as_str()
-              {
-                let use_color = !silent;
-                let prefix = state
-                  .get_activity_prefix(*id, &log_prefix_style, use_color)
-                  .unwrap_or_default();
-                let prefixed_log = format!("{prefix}{log_text}");
-                let mut logs = log_buffer_clone.lock().unwrap();
-                logs.push_back(prefixed_log);
-                if let Some(limit) = log_line_limit {
-                  while logs.len() > limit {
-                    logs.pop_front();
-                  }
-                }
-              }
-            },
-            _ => {},
-          }
-
-          if derivation_count_after != derivation_count_before {
-            debug!(
-              "Derivation count changed: {} -> {}",
-              derivation_count_before, derivation_count_after
-            );
-          }
-        } else {
-          debug!("Failed to parse JSON: {}", json_line);
+    for line in reader.lines() {
+      let Ok(line) = line else { break };
+      let event = if let Some(json) = line.strip_prefix("@nix ") {
+        match serde_json::from_str::<cognos::Actions>(json) {
+          Ok(action) => Event::Json(Box::new(action)),
+          Err(_) => Event::RawLog(line),
         }
       } else {
-        // Non-JSON lines, buffer them
-        non_json_count += 1;
-        let mut logs = log_buffer_clone.lock().unwrap();
-        logs.push_back(line.clone());
-        // Keep only recent logs based on limit
+        Event::RawLog(line)
+      };
+      if stderr_tx.send(event).is_err() {
+        break;
+      }
+    }
+    let _ = stderr_tx.send(Event::StderrEof);
+  });
+
+  // stdout reader: just forward lines; they get printed after the build.
+  let stdout_tx = tx.clone();
+  let stdout_thread = thread::spawn(move || {
+    let reader = BufReader::new(stdout);
+    for line in reader.lines() {
+      let Ok(line) = line else { break };
+      if stdout_tx.send(Event::Stdout(line)).is_err() {
+        break;
+      }
+    }
+    let _ = stdout_tx.send(Event::StdoutEof);
+  });
+  drop(tx);
+
+  // Main thread owns State and Display. No locks, no clones.
+  let display_config = rom_core::display::DisplayConfig {
+    show_timers: true,
+    max_tree_depth: 10,
+    max_visible_lines: 100,
+    use_color: !silent,
+    format,
+    legend_style,
+    summary_style,
+    icons: rom_core::icons::detect(),
+  };
+  let mut display =
+    rom_core::display::Display::new(io::stderr(), display_config)?;
+  let mut state = rom_core::state::State::new();
+  let mut logs: VecDeque<String> = VecDeque::new();
+  let mut stdout_lines: Vec<String> = Vec::new();
+  let mut stderr_done = false;
+  let mut stdout_done = false;
+  let mut dirty = false;
+  let mut last_render = Instant::now();
+
+  // Adaptive render cadence: frequent when state is changing, slow when idle.
+  let fast = Duration::from_millis(60);
+  let slow = Duration::from_secs(1);
+
+  while !(stderr_done && stdout_done) {
+    let timeout = if dirty { fast } else { slow };
+    match rx.recv_timeout(timeout) {
+      Ok(Event::Json(action)) => {
+        let action = *action;
+        // Update state first so activity prefixes are resolvable.
+        rom_core::update::process_message(&mut state, action.clone());
+        rom_core::update::maintain_state(
+          &mut state,
+          rom_core::state::current_time(),
+        );
+
+        // Extract any log line from this action.
+        match &action {
+          cognos::Actions::Message { msg, raw_msg, .. } => {
+            // Prefer raw_msg (Lix) to avoid embedded ANSI escapes.
+            let text = raw_msg.as_deref().unwrap_or(msg.as_str());
+            logs.push_back(text.to_string());
+          },
+          cognos::Actions::Result {
+            fields,
+            result_type,
+            id,
+          } if matches!(result_type, cognos::ResultType::BuildLogLine)
+            && !fields.is_empty() =>
+          {
+            if let Some(log_text) = fields[0].as_str() {
+              let prefix = state
+                .get_activity_prefix(*id, &log_prefix_style, !silent)
+                .unwrap_or_default();
+              logs.push_back(format!("{prefix}{log_text}"));
+            }
+          },
+          _ => {},
+        }
         if let Some(limit) = log_line_limit {
           while logs.len() > limit {
             logs.pop_front();
           }
         }
-      }
-    }
-    debug!(
-      "Stderr thread finished: {} JSON messages, {} non-JSON lines",
-      json_count, non_json_count
-    );
-    *processing_done_clone.lock().unwrap() = true;
-  });
-
-  // Read stdout (final nix output)
-  let stdout_lines = Arc::new(Mutex::new(Vec::new()));
-  let stdout_lines_clone = stdout_lines.clone();
-
-  let stdout_thread = thread::spawn(move || {
-    let reader = BufReader::new(stdout);
-    for line in reader.lines().map_while(Result::ok) {
-      stdout_lines_clone.lock().unwrap().push(line);
-    }
-  });
-
-  // Render loop, this is what displays the build graph
-  let render_thread = thread::spawn(move || {
-    use rom_core::display::{Display, DisplayConfig};
-
-    let display_config = DisplayConfig {
-      show_timers: true,
-      max_tree_depth: 10,
-      max_visible_lines: 100,
-      use_color: true,
-      format,
-      legend_style,
-      summary_style,
-      icons: rom_core::icons::detect(),
-    };
-
-    let mut display = Display::new(io::stderr(), display_config).unwrap();
-    let mut last_timer_display: Option<String> = None;
-
-    // Render loop
-    loop {
-      thread::sleep(Duration::from_millis(100));
-      let done = *processing_done.lock().unwrap();
-
-      let state = render_state.lock().unwrap();
-      let has_activity = !state.derivation_infos.is_empty()
-        || !state.full_summary.running_builds.is_empty()
-        || !state.full_summary.planned_builds.is_empty();
-
-      {
-        // Get buffered logs for coordinated rendering (suppressed when
-        // --silent)
-        let logs: Vec<String> = if silent {
-          vec![]
-        } else {
-          log_buffer_render.lock().unwrap().iter().cloned().collect()
-        };
-
-        if has_activity || state.progress_state != ProgressState::JustStarted {
-          // Clear any previous timer display
-          if last_timer_display.is_some() {
-            last_timer_display = None;
-          }
-          let _ = display.render(&state, &logs);
-        } else {
-          // Show initial timer while waiting for activity
-          let start = *start_time_clone.lock().unwrap();
-          let elapsed = rom_core::state::current_time() - start;
-          let timer_text =
-            format!("⏱ {}", rom_core::display::format_duration(elapsed));
-
-          // Only update if changed (to avoid flicker)
-          if last_timer_display.as_ref() != Some(&timer_text) {
-            let _ = display.render(&state, &logs);
-            last_timer_display = Some(timer_text);
+        dirty = true;
+      },
+      Ok(Event::RawLog(line)) => {
+        logs.push_back(line);
+        if let Some(limit) = log_line_limit {
+          while logs.len() > limit {
+            logs.pop_front();
           }
         }
-      }
-
-      if done {
-        break;
-      }
+        dirty = true;
+      },
+      Ok(Event::Stdout(line)) => stdout_lines.push(line),
+      Ok(Event::StderrEof) => stderr_done = true,
+      Ok(Event::StdoutEof) => stdout_done = true,
+      Err(mpsc::RecvTimeoutError::Timeout) => {}, // fall through to render
+      Err(mpsc::RecvTimeoutError::Disconnected) => break,
     }
 
-    // Final render
-    thread::sleep(Duration::from_millis(50));
-    {
-      let mut state = render_state.lock().unwrap();
-      rom_core::update::finish_state(&mut state);
-      let _ = display.render_final(&state);
+    // Render at most once per `fast` interval when dirty; once per `slow`
+    // otherwise so the elapsed-time ticker stays fresh.
+    let since = last_render.elapsed();
+    let should_render = (dirty && since >= fast) || since >= slow;
+    if should_render {
+      // Full topological recompute of transitive dep summaries before
+      // rendering — O(V + E), cheap even for large graphs, and guaranteed
+      // correct under diamond deps.
+      rom_core::update::summaries(&mut state);
+      let logs_vec: Vec<String> = if silent {
+        Vec::new()
+      } else {
+        logs.iter().cloned().collect()
+      };
+      let _ = display.render(&state, &logs_vec);
+      last_render = Instant::now();
+      dirty = false;
     }
-  });
+  }
 
-  // Wait for process to complete
-  let status = child.wait().map_err(rom_core::error::RomError::Io)?;
+  // Final render with the finish pass. Summaries twice — once before
+  // finish_state so in-flight nodes are accurate, once after so completions
+  // recorded during finish are propagated.
+  rom_core::update::summaries(&mut state);
+  rom_core::update::finish_state(&mut state);
+  rom_core::update::summaries(&mut state);
+  let _ = display.render_final(&state);
 
-  // Wait for threads to finish
+  let status = child.wait().map_err(RomError::Io)?;
   let _ = stderr_thread.join();
   let _ = stdout_thread.join();
-  let _ = render_thread.join();
 
-  // Print captured stdout (nix's final output)
-  let stdout_lines = stdout_lines.lock().unwrap();
-  for line in stdout_lines.iter() {
-    use std::io::Write;
+  // _cursor_guard drops here and restores the cursor.
+
+  use std::io::Write;
+  for line in &stdout_lines {
     let _ = writeln!(std::io::stdout(), "{line}");
   }
 

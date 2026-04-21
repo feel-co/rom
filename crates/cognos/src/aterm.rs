@@ -151,7 +151,7 @@ fn parse_outputs(s: &str) -> Result<Vec<(String, String)>, String> {
   Ok(outputs)
 }
 
-/// Parse input derivations: [("/nix/store/foo.drv",["out"]),...]
+/// Parse input derivations: `[("/nix/store/foo.drv",["out"]),...]`
 fn parse_input_drvs(s: &str) -> Result<Vec<(String, Vec<String>)>, String> {
   let s = s.trim();
   if s == "[]" {

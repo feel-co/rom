@@ -15,4 +15,6 @@ path = "src/lib.rs"
 [dependencies]
 rom-core = { path = "../crates/rom-core" }
 rom-cli = { path = "../crates/rom-cli" }
-eyre.workspace = true
+
+[lints]
+workspace = true

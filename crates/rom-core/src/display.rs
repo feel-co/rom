@@ -4,15 +4,11 @@ use std::{
   io::{self, Write},
 };
 
-use crossterm::{
-  cursor,
-  execute,
-  style::{Color, ResetColor, SetForegroundColor},
-};
-
 use crate::{
+  debug,
   icons::Icons,
   state::{BuildStatus, DerivationId, State, current_time},
+  term::{self, Color},
   types::{LegendStyle, SummaryStyle},
 };
 
@@ -79,24 +75,31 @@ impl<W: Write> Display<W> {
   }
 
   pub fn clear_previous(&mut self) -> io::Result<()> {
-    if self.last_lines > 0 {
-      // Move up in a single escape sequence, then clear to end of screen.
-      // This is much cheaper than calling MoveUp(1) in a loop because it
-      // produces one write + one flush instead of N.
-      execute!(
-        self.writer,
-        cursor::MoveToColumn(0),
-        cursor::MoveUp(self.last_lines as u16),
-        cursor::MoveToColumn(0),
-        crossterm::terminal::Clear(
-          crossterm::terminal::ClearType::FromCursorDown
-        )
-      )?;
-    }
-    Ok(())
+    term::clear_lines(&mut self.writer, self.last_lines)
   }
 
   pub fn render(&mut self, state: &State, logs: &[String]) -> io::Result<()> {
+    // Wrap each frame in a synchronized update so terminals that honor
+    // DEC private mode 2026 batch the diff and avoid mid-frame flicker.
+    // Skip when color is disabled — callers in that mode want pure output
+    // (tests, pipes, `NO_COLOR` etc.).
+    let sync = self.config.use_color;
+    if sync {
+      term::begin_sync(&mut self.writer)?;
+    }
+    let result = self.render_inner(state, logs);
+    if sync {
+      term::end_sync(&mut self.writer)?;
+    }
+    self.writer.flush()?;
+    result
+  }
+
+  fn render_inner(
+    &mut self,
+    state: &State,
+    logs: &[String],
+  ) -> io::Result<()> {
     // Print any log lines that arrived since last render. These are printed
     // once and scroll up naturally, we never clear them.
     let new_logs = &logs[self.printed_log_lines.min(logs.len())..];
@@ -131,9 +134,14 @@ impl<W: Write> Display<W> {
       },
     };
 
-    if graph_lines.len() > self.config.max_visible_lines {
-      graph_lines.truncate(self.config.max_visible_lines);
-    }
+    // Fit the frame into the terminal height: rows - 1 so the prompt
+    // stays visible on exit, but floored at 4 so very small terminals
+    // (1-3 rows — usually sized oddly by a wrapping parent) still get a
+    // usable frame rather than disappearing entirely.
+    let (_, rows) = term::size();
+    let budget = rows.saturating_sub(1).max(4);
+    let hard_cap = self.config.max_visible_lines.min(budget);
+    graph_lines = elide_middle(graph_lines, hard_cap);
 
     self.last_lines = graph_lines.len();
 
@@ -143,11 +151,11 @@ impl<W: Write> Display<W> {
       out.push('\n');
     }
     self.writer.write_all(out.as_bytes())?;
-    self.writer.flush()
+    Ok(())
   }
 
   pub fn render_final(&mut self, state: &State) -> io::Result<()> {
-    tracing::debug!("render_final called");
+    debug!("render_final called");
 
     // Clear any previous render
     self.clear_previous()?;
@@ -172,7 +180,7 @@ impl<W: Write> Display<W> {
       },
     }
 
-    tracing::debug!("render_final: {} lines to print", lines.len());
+    debug!("render_final: {} lines to print", lines.len());
 
     // Print final output (don't track last_lines since this is final)
     for line in lines {
@@ -199,8 +207,7 @@ impl<W: Write> Display<W> {
     let completed = state.full_summary.completed_builds.len();
     let nix_errors = state.nix_errors.len();
     let duration = current_time() - state.start_time;
-    let now = chrono::Local::now();
-    let at = now.format("%H:%M:%S");
+    let at = format_local_hms();
     let dur = self.format_duration(duration);
 
     let ic = self.ic();
@@ -213,7 +220,7 @@ impl<W: Write> Display<W> {
           &format!("Exited after {failed} build {noun}"),
           Color::DarkRed
         ),
-        self.colored(&at.to_string(), Color::DarkRed),
+        self.colored(&at, Color::DarkRed),
         self.colored(&dur, Color::DarkRed),
       )
     } else if nix_errors > 0 {
@@ -225,7 +232,7 @@ impl<W: Write> Display<W> {
           &format!("Exited with {nix_errors} nix {noun}"),
           Color::DarkRed
         ),
-        self.colored(&at.to_string(), Color::DarkRed),
+        self.colored(&at, Color::DarkRed),
         self.colored(&dur, Color::DarkRed),
       )
     } else {
@@ -252,8 +259,7 @@ impl<W: Write> Display<W> {
     let dl_done = state.full_summary.completed_downloads.len();
     let ul_done = state.full_summary.completed_uploads.len();
     let duration = current_time() - state.start_time;
-    let now = chrono::Local::now();
-    let at = now.format("%H:%M:%S");
+    let at = format_local_hms();
     let dur = self.format_duration(duration);
 
     if completed + failed + dl_done + ul_done == 0 {
@@ -370,8 +376,7 @@ impl<W: Write> Display<W> {
     let ul_done = state.full_summary.completed_uploads.len();
     let ul_running = state.full_summary.running_uploads.len();
     let duration = current_time() - state.start_time;
-    let now = chrono::Local::now();
-    let at = now.format("%H:%M:%S");
+    let at = format_local_hms();
 
     let v = self.colored("┃", Color::DarkBlue);
 
@@ -464,11 +469,12 @@ impl<W: Write> Display<W> {
     let ic = self.ic();
 
     // Always emit ⏵ │ ✔ │ ✗ │ ⏸, dim zeros
-    let mut parts: Vec<String> = Vec::new();
-    parts.push(self.count_colored(ic.running, running, Color::DarkYellow));
-    parts.push(self.count_colored(ic.done, completed, Color::DarkGreen));
-    parts.push(self.count_colored(ic.failed, failed, Color::DarkRed));
-    parts.push(self.count_colored(ic.planned, planned, Color::DarkBlue));
+    let mut parts: Vec<String> = vec![
+      self.count_colored(ic.running, running, Color::DarkYellow),
+      self.count_colored(ic.done, completed, Color::DarkGreen),
+      self.count_colored(ic.failed, failed, Color::DarkRed),
+      self.count_colored(ic.planned, planned, Color::DarkBlue),
+    ];
     if dl > 0 {
       parts.push(format!(
         "{} {dl}",
@@ -913,16 +919,17 @@ impl<W: Write> Display<W> {
 
     for (name, build) in &builds {
       let elapsed = now - build.start;
-      let mut suffix = String::new();
-      if let Some(est) = build.estimate {
+      let suffix = if let Some(est) = build.estimate {
         let remaining = est.saturating_sub(elapsed as u64);
-        suffix = format!(
+        format!(
           "  {} {}",
           self.colored(ic.estimate, Color::DarkGrey),
           self
             .colored(&self.format_duration(remaining as f64), Color::DarkGrey)
-        );
-      }
+        )
+      } else {
+        String::new()
+      };
       let host_label = match &build.host {
         cognos::Host::Remote(h) => {
           format!("  {}", self.colored(h, Color::DarkMagenta))
@@ -1028,11 +1035,7 @@ impl<W: Write> Display<W> {
     let host_s = self.colored(&host, Color::DarkMagenta);
     let dur_s = self.colored(&duration_str, Color::DarkGrey);
     let fail_s = if failed > 0 && self.config.use_color {
-      format!(
-        "{}\x1b[1m{failed}\x1b[0m{}",
-        SetForegroundColor(Color::DarkRed),
-        ResetColor
-      )
+      term::paint_bold(&failed.to_string(), Color::DarkRed)
     } else {
       failed.to_string()
     };
@@ -1062,8 +1065,7 @@ impl<W: Write> Display<W> {
     let duration = current_time() - state.start_time;
     let completed = state.full_summary.completed_builds.len();
     let failed = state.full_summary.failed_builds.len();
-    let now = chrono::Local::now();
-    let at = now.format("%H:%M:%S");
+    let at = format_local_hms();
 
     let ic = self.ic();
     let sep = self.colored(&"─".repeat(44), Color::DarkBlue);
@@ -1109,11 +1111,7 @@ impl<W: Write> Display<W> {
     let dur_s = self.colored(&duration_str, Color::DarkGrey);
     let jobs = completed + failed;
     let fail_s = if failed > 0 && self.config.use_color {
-      format!(
-        "{}\x1b[1m{failed}\x1b[0m{}",
-        SetForegroundColor(Color::DarkRed),
-        ResetColor
-      )
+      term::paint_bold(&failed.to_string(), Color::DarkRed)
     } else {
       failed.to_string()
     };
@@ -1621,7 +1619,7 @@ impl<W: Write> Display<W> {
 
   fn colored(&self, text: &str, color: Color) -> String {
     if self.config.use_color {
-      format!("{}{}{}", SetForegroundColor(color), text, ResetColor)
+      term::paint(text, color)
     } else {
       text.to_string()
     }
@@ -1630,12 +1628,7 @@ impl<W: Write> Display<W> {
   /// Render text in the given color AND bold weight.
   fn colored_bold(&self, text: &str, color: Color) -> String {
     if self.config.use_color {
-      format!(
-        "{}\x1b[1m{}\x1b[0m{}",
-        SetForegroundColor(color),
-        text,
-        ResetColor
-      )
+      term::paint_bold(text, color)
     } else {
       text.to_string()
     }
@@ -1688,6 +1681,49 @@ impl<W: Write> Display<W> {
     };
     format_size(total) + &self.colored(&format!(" ({pct}%)"), Color::DarkGrey)
   }
+}
+
+/// Format the current local time as "HH:MM:SS".
+///
+/// Uses libc::localtime_r to honor the process timezone. Falls back to UTC
+/// if localtime_r fails.
+pub(crate) fn format_local_hms() -> String {
+  use std::time::{SystemTime, UNIX_EPOCH};
+  let secs = SystemTime::now()
+    .duration_since(UNIX_EPOCH)
+    .map(|d| d.as_secs() as i64)
+    .unwrap_or(0);
+  #[cfg(unix)]
+  unsafe {
+    let t: libc::time_t = secs;
+    let mut tm: libc::tm = std::mem::zeroed();
+    if !libc::localtime_r(&raw const t, &raw mut tm).is_null() {
+      return format!(
+        "{:02}:{:02}:{:02}",
+        tm.tm_hour, tm.tm_min, tm.tm_sec
+      );
+    }
+  }
+  let rem = secs.rem_euclid(86_400);
+  format!("{:02}:{:02}:{:02}", rem / 3600, (rem % 3600) / 60, rem % 60)
+}
+
+/// Trim `lines` to at most `max` rows, keeping the head and tail and
+/// inserting a single "⋮" marker in between. Preserves context at both
+/// ends (the root of the tree and the summary / status line).
+fn elide_middle(lines: Vec<String>, max: usize) -> Vec<String> {
+  if max == 0 || lines.len() <= max {
+    return lines;
+  }
+  // Reserve one row for the elision marker itself.
+  let keep = max.saturating_sub(1);
+  let head = keep.div_ceil(2);
+  let tail = keep - head;
+  let mut out = Vec::with_capacity(max);
+  out.extend(lines.iter().take(head).cloned());
+  out.push("  ⋮".to_string());
+  out.extend(lines.iter().rev().take(tail).rev().cloned());
+  out
 }
 
 fn format_size(bytes: u64) -> String {

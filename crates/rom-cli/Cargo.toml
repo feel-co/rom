@@ -11,6 +11,6 @@ cognos.workspace = true
 
 clap.workspace = true
 serde_json.workspace = true
-tracing.workspace = true
-tracing-subscriber.workspace = true
-eyre.workspace = true
+
+[lints]
+workspace = true

@@ -1,7 +1,7 @@
 //! Icon sets for ROM display output.
 //!
 //! Two sets are available: Unicode (standard, widely supported) and Nerd Fonts
-//! (requires a patched font, detected automatically via `has-nerd-font`).
+//! (requires a patched font). Detection is opt-in via `NERD_FONTS=1`.
 
 /// A complete set of display icons.
 pub struct Icons {
@@ -31,9 +31,7 @@ pub static UNICODE: Icons = Icons {
 
 /// Nerd Fonts icons.
 ///
-/// Requires a Nerd Font–patched terminal font. Detected automatically via
-/// the `has-nerd-font` crate, but can be forced with `NERD_FONTS=1` (or
-/// disabled with `NERD_FONTS=0`).
+/// Requires a Nerd Font–patched terminal font. Opt in with `NERD_FONTS=1`.
 pub static NERD: Icons = Icons {
   running:  "\u{f04b}",  // 
   done:     "\u{f00c}",  // 
@@ -46,23 +44,12 @@ pub static NERD: Icons = Icons {
   summary:  "\u{f04a0}", // 󰒠
 };
 
-/// Detect the best icon set for the current terminal session.
-///
-/// Checks `NERD_FONTS` env override first (`1` forces Nerd, `0` forces
-/// Unicode), then delegates to `has-nerd-font` for automatic detection.
+/// Pick the icon set based on `NERD_FONTS` env var. Defaults to Unicode —
+/// nerd-font auto-detection is unreliable across terminals, so we don't
+/// guess.
 pub fn detect() -> &'static Icons {
-  // Manual override takes precedence
-  if let Ok(v) = std::env::var("NERD_FONTS") {
-    match v.trim() {
-      "1" | "true" | "yes" => return &NERD,
-      "0" | "false" | "no" => return &UNICODE,
-      _ => {},
-    }
-  }
-
-  let vars: Vec<(String, String)> = std::env::vars().collect();
-  match has_nerd_font::detect(&vars).detected {
-    Some(true) => &NERD,
+  match std::env::var("NERD_FONTS").as_deref() {
+    Ok("1" | "true" | "yes") => &NERD,
     _ => &UNICODE,
   }
 }
