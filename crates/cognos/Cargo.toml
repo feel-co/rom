@@ -2,7 +2,6 @@
 name = "cognos"
 description = "Minimalistic parser for Nix's ATerm .drv and internal-json log formats"
 version = "1.0.0"
-
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
