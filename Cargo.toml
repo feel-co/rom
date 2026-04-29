@@ -10,8 +10,9 @@ rust-version = "1.92.0"
 license = "EUPL-1.2"
 
 [workspace.dependencies]
-rom-core = { path = "./crates/rom-core" }
-cognos = { path = "./crates/cognos" }
+rom-core = { path = "./crates/rom-core", version = "0.1.0" }
+rom-cli = { path = "./crates/rom-cli", version = "0.1.0" }
+cognos = { path = "./crates/cognos", version = "1.0.0" }     # cognos is versioned independently
 
 anyhow = "1.0.102"
 clap = { version = "4.6.0", features = ["derive"] }

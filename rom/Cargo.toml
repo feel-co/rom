@@ -13,6 +13,6 @@ path = "src/main.rs"
 path = "src/lib.rs"
 
 [dependencies]
-rom-core = { path = "../crates/rom-core" }
-rom-cli = { path = "../crates/rom-cli" }
+rom-core.workspace = true
+rom-cli.workspace = true
 eyre.workspace = true
