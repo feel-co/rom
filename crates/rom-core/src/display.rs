@@ -78,6 +78,12 @@ impl<W: Write> Display<W> {
     })
   }
 
+  /// Get a mutable reference to the underlying writer for passthrough output.
+  /// This allows external code to write directly through the display's buffer.
+  pub fn writer(&mut self) -> &mut W {
+    &mut self.writer
+  }
+
   pub fn clear_previous(&mut self) -> io::Result<()> {
     if self.last_lines > 0 {
       // Move up in a single escape sequence, then clear to end of screen.

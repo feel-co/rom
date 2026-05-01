@@ -145,9 +145,9 @@ impl<W: Write> Monitor<W> {
     if let Some(json_str) = line.strip_prefix("@nix ") {
       match serde_json::from_str::<cognos::Actions>(json_str) {
         Ok(action) => {
-          // Handle message passthrough - print directly to stdout
+          // Handle message passthrough by writing through display's writer
           if let cognos::Actions::Message { msg, .. } = &action {
-            println!("{msg}");
+            writeln!(self.display.writer(), "{msg}").map_err(RomError::Io)?;
           }
 
           let changed = update::process_message(&mut self.state, action);
@@ -161,7 +161,7 @@ impl<W: Write> Monitor<W> {
       }
     } else {
       // Non-JSON lines in JSON mode are passed through
-      println!("{line}");
+      writeln!(self.display.writer(), "{line}").map_err(RomError::Io)?;
       Ok(false)
     }
   }
@@ -467,8 +467,8 @@ impl<W: Write> Monitor<W> {
       return Ok(true);
     }
 
-    // Passthrough: unrecognized lines go to stdout
-    println!("{line}");
+    // Unrecognized lines go through display's writer
+    writeln!(self.display.writer(), "{line}").map_err(RomError::Io)?;
     Ok(false)
   }
 
